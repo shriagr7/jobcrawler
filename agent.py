@@ -23,6 +23,13 @@ import requests
 from bs4 import BeautifulSoup
 from sqlalchemy import create_engine, text
 
+try:
+    from playwright.sync_api import sync_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:  # Static HTML crawling remains available without Playwright.
+    sync_playwright = None
+    PLAYWRIGHT_AVAILABLE = False
+
 CONFIG_PATH = Path(__file__).with_name("config.json")
 DEFAULT_JOB_URL_KEYWORDS = [
     "job", "jobs", "career", "careers", "opening", "position", "vacancy",
@@ -264,12 +271,218 @@ def is_job_detail_url(url: str, seed_url: str, keywords: list[str]) -> bool:
     seed = canonical_url(seed_url).rstrip("/")
     if url == seed:
         return False
-    path = urlparse(url).path.strip("/").lower()
-    seed_path = urlparse(seed).path.strip("/").lower()
+
+    target_parts = urlparse(url)
+    seed_parts = urlparse(seed)
+    path_and_query = f"{target_parts.path}?{target_parts.query}".lower()
+    seed_path = seed_parts.path.strip("/").lower()
+
     # A path nested beneath a career/jobs root is normally a detail page.
+    path = target_parts.path.strip("/").lower()
     if seed_path and path.startswith(seed_path + "/") and len(path.split("/")) > len(seed_path.split("/")):
         return True
-    return any(keyword.lower() in url.lower() for keyword in keywords)
+    return any(keyword.lower() in path_and_query for keyword in keywords)
+
+
+def anchor_looks_job_related(anchor: Any, target_url: str, keywords: list[str]) -> bool:
+    """Classify links using the URL path/query, link text, and nearby card semantics."""
+    parts = urlparse(target_url)
+    path_and_query = f"{parts.path}?{parts.query}".lower()
+    if any(keyword.lower() in path_and_query for keyword in keywords):
+        return True
+
+    label = clean(anchor.get_text(" ", strip=True))[:180]
+    if re.search(
+        r"\b(apply|view (?:job|role|position)|see (?:job|role|position)|job details|"
+        r"current (?:jobs|roles|positions|openings)|open positions|browse jobs)\b",
+        label,
+        re.I,
+    ):
+        return True
+
+    context_parts = []
+    node = anchor
+    for _ in range(4):
+        if node is None or not getattr(node, "attrs", None):
+            break
+        context_parts.extend(node.get("class", []) if isinstance(node.get("class"), list) else [str(node.get("class", ""))])
+        context_parts.append(str(node.get("id", "")))
+        node = node.parent
+    context = " ".join(context_parts).lower()
+    return bool(
+        4 <= len(label) <= 150
+        and re.search(r"job|career|opening|position|requisition|vacanc|role|posting", context)
+    )
+
+
+def parse_page_html(html: str) -> tuple[BeautifulSoup, BeautifulSoup, list[dict[str, str]], str, str]:
+    """Parse raw HTML and return soups, JSON-LD jobs, page title and visible text."""
+    raw_soup = BeautifulSoup(html or "", "html.parser")
+    jobdata_list = jsonld_job_data(raw_soup)
+    clean_soup = BeautifulSoup(html or "", "html.parser")
+    for tag in clean_soup(["script", "style", "noscript", "svg", "nav", "footer", "header"]):
+        tag.decompose()
+    heading = clean_soup.find("h1")
+    title_tag = clean_soup.find("title")
+    page_title = clean((heading or title_tag or clean_soup).get_text(" ", strip=True))[:300]
+    page_text = clean(clean_soup.get_text(" ", strip=True))
+    return raw_soup, clean_soup, jobdata_list, page_title, page_text
+
+
+def relevant_job_link_count(soup: BeautifulSoup, page_url: str, allowed: set[str], keywords: list[str]) -> int:
+    """Count unique same-company/explicitly-approved job-related links on a page."""
+    found: set[str] = set()
+    for anchor in soup.find_all("a", href=True):
+        href = clean(anchor.get("href"))
+        if not href or href.startswith(("mailto:", "tel:", "javascript:")):
+            continue
+        target = canonical_url(urljoin(page_url, href))
+        parts = urlparse(target)
+        if parts.scheme not in ("http", "https") or normalized_host(target) not in allowed:
+            continue
+        if anchor_looks_job_related(anchor, target, keywords):
+            found.add(target)
+    return len(found)
+
+
+def should_render_with_browser(
+    soup: BeautifulSoup,
+    jobdata_list: list[dict[str, str]],
+    page_title: str,
+    page_text: str,
+    page_url: str,
+    seed_url: str,
+    allowed: set[str],
+    keywords: list[str],
+    cfg: dict,
+) -> bool:
+    """Choose Playwright only when static HTML likely lacks rendered job content."""
+    if jobdata_list or not bool(cfg.get("enable_playwright", True)):
+        return False
+
+    min_text = max(200, int(cfg.get("playwright_min_static_text_chars", 1200)))
+    min_links = max(0, int(cfg.get("playwright_min_job_links", 2)))
+    text_lower = (page_title + " " + page_text).lower()
+    js_placeholder = bool(re.search(
+        r"enable javascript|javascript is required|loading (?:jobs|openings|positions)|"
+        r"please wait while we load|your browser does not support javascript",
+        text_lower,
+        re.I,
+    ))
+    link_count = relevant_job_link_count(soup, page_url, allowed, keywords)
+    detail_page_with_content = (
+        is_job_detail_url(page_url, seed_url, keywords)
+        and len(page_text) >= 700
+        and bool(re.search(
+            r"responsibilities|qualifications|required skills|years of experience|apply now|"
+            r"job description|what you.?ll do|what you.?ll need",
+            page_text,
+            re.I,
+        ))
+    )
+    if detail_page_with_content and not js_placeholder:
+        return False
+    return js_placeholder or len(page_text) < min_text or link_count < min_links
+
+
+def render_page_with_playwright(
+    context: Any,
+    url: str,
+    cfg: dict,
+) -> tuple[str | None, str, str]:
+    """Render a page with headless Chromium and return (HTML, final URL, diagnostic)."""
+    if context is None:
+        return None, url, "Playwright browser context is unavailable"
+
+    timeout_ms = max(8000, int(cfg.get("playwright_timeout_ms", 25000)))
+    wait_ms = max(0, min(10000, int(cfg.get("playwright_render_wait_ms", 1200))))
+    scroll_count = max(0, min(8, int(cfg.get("playwright_scroll_count", 3))))
+    load_more_clicks = max(0, min(8, int(cfg.get("playwright_load_more_clicks", 3))))
+    page = None
+    try:
+        page = context.new_page()
+        page.set_default_navigation_timeout(timeout_ms)
+        page.set_default_timeout(min(timeout_ms, 10000))
+        response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        if response is not None:
+            status = int(response.status)
+            if status in (401, 403, 429):
+                return None, page.url, f"Browser returned HTTP {status}; access is restricted or rate-limited"
+            if status >= 400:
+                return None, page.url, f"Browser returned HTTP {status}"
+
+        # Give client-side job widgets a chance to fetch their data. Some sites never
+        # reach network-idle because of analytics/long polling, so this wait is bounded.
+        try:
+            page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 4500))
+        except Exception:
+            pass
+        if wait_ms:
+            page.wait_for_timeout(wait_ms)
+
+        # Support simple lazy-loading lists that append cards as the page is scrolled.
+        for _ in range(scroll_count):
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(250)
+
+        # Click only clearly labelled, non-application expansion controls.
+        more_pattern = re.compile(r"^(load more(?: jobs)?|show more(?: jobs)?|view more(?: jobs)?|more jobs)$", re.I)
+        for _ in range(load_more_clicks):
+            try:
+                locator = page.get_by_role("button", name=more_pattern)
+                if locator.count() == 0:
+                    locator = page.get_by_role("link", name=more_pattern)
+                if locator.count() == 0:
+                    break
+                control = locator.first
+                if not control.is_visible() or not control.is_enabled():
+                    break
+                control.click(timeout=2500)
+                page.wait_for_timeout(400)
+            except Exception:
+                break
+
+        return page.content(), canonical_url(page.url), "rendered with Playwright Chromium"
+    except Exception as exc:
+        return None, url, f"Playwright rendering failed ({type(exc).__name__}: {exc})"
+    finally:
+        if page is not None:
+            try:
+                page.close()
+            except Exception:
+                pass
+
+
+def start_playwright(cfg: dict, user_agent: str) -> tuple[Any, Any, Any]:
+    """Start one Chromium browser for this scan; return (driver, browser, context)."""
+    if not bool(cfg.get("enable_playwright", True)):
+        print("Playwright fallback is disabled in config.json.")
+        return None, None, None
+    if not PLAYWRIGHT_AVAILABLE or sync_playwright is None:
+        print("WARNING: Playwright is not installed; continuing with static HTML only. Add playwright to requirements and install Chromium.")
+        return None, None, None
+    driver = None
+    try:
+        driver = sync_playwright().start()
+        browser = driver.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        context = browser.new_context(
+            user_agent=user_agent,
+            viewport={"width": 1440, "height": 1000},
+            locale="en-US",
+        )
+        print("Playwright fallback is ready (headless Chromium).")
+        return driver, browser, context
+    except Exception as exc:
+        if driver is not None:
+            try:
+                driver.stop()
+            except Exception:
+                pass
+        print(f"WARNING: Could not start Playwright Chromium ({type(exc).__name__}: {exc}). Static HTML fallback only.")
+        return None, None, None
 
 
 def extract_job_record(
@@ -439,6 +652,7 @@ def main() -> None:
     except json.JSONDecodeError as exc:
         raise SystemExit(f"config.json is not valid JSON: {exc}")
 
+    companies_to_scan = company_configs(cfg)
     ua = clean(cfg.get("user_agent")) or "RoleRadarBot/1.0"
     delay = max(1.0, float(cfg.get("request_delay_seconds", 2)))
     max_pages = max(1, int(cfg.get("max_pages_per_domain", cfg.get("max_pages_per_company", 80))))
@@ -451,80 +665,148 @@ def main() -> None:
     records: list[dict[str, str]] = []
     visited_total = 0
     blocked_total = 0
+    rendered_total = 0
+    browser_errors = 0
 
-    for company_cfg in company_configs(cfg):
-        company_name = clean(company_cfg.get("name"))
-        seed = clean(company_cfg.get("career_url"))
-        if not seed.lower().startswith(("https://", "http://")):
-            print(f"SKIP {company_name}: career_url must begin with http:// or https://: {seed}")
-            continue
-
-        configured_domains = company_cfg.get("allowed_domains", []) or []
-        if isinstance(configured_domains, str):
-            configured_domains = re.split(r"[,;\s]+", configured_domains)
-        allowed = {clean(domain).lower().removeprefix("www.").strip("/") for domain in configured_domains if clean(domain)}
-        allowed.add(normalized_host(seed))
-        if normalized_host(seed) not in allowed:
-            print(f"CONFIG ERROR {company_name}: career_url host {normalized_host(seed)!r} is not in allowed_domains {sorted(allowed)!r}")
-            continue
-
-        company_records_before = len(records)
-        queue = deque([canonical_url(seed)])
-        seen: set[str] = set()
-        print(f"\n=== {company_name} ===")
-        print(f"Start URL: {seed} | allowed domains: {', '.join(sorted(allowed))} | page limit: {max_pages}")
-
-        while queue and len(seen) < max_pages:
-            url = canonical_url(queue.popleft())
-            if not url or url in seen:
+    playwright_driver, browser, browser_context = start_playwright(cfg, ua)
+    try:
+        for company_cfg in companies_to_scan:
+            company_name = clean(company_cfg.get("name"))
+            seed = clean(company_cfg.get("career_url"))
+            if not seed.lower().startswith(("https://", "http://")):
+                print(f"SKIP {company_name}: career_url must begin with http:// or https://: {seed}")
                 continue
-            parsed = urlparse(url)
-            host = normalized_host(url)
-            if parsed.scheme not in ("http", "https") or host not in allowed:
-                continue
-            seen.add(url)
-            allowed_by_robots, robots_message = robots_check(url, ua, session, robots_cache)
-            if not allowed_by_robots:
-                blocked_total += 1
-                print(f"SKIP robots.txt: {url} | {robots_message}")
-                continue
-            try:
-                response = session.get(url, timeout=25, allow_redirects=True)
-                final_url = canonical_url(response.url)
-                final_host = normalized_host(final_url)
-                if final_host not in allowed:
-                    print(f"SKIP redirect outside allowed_domains: {url} -> {final_url}")
+
+            configured_domains = company_cfg.get("allowed_domains", []) or []
+            if isinstance(configured_domains, str):
+                configured_domains = re.split(r"[,;\s]+", configured_domains)
+            allowed = {clean(domain).lower().removeprefix("www.").strip("/") for domain in configured_domains if clean(domain)}
+            allowed.add(normalized_host(seed))
+
+            company_records_before = len(records)
+            queue = deque([canonical_url(seed)])
+            seen: set[str] = set()
+            general_links_queued: set[str] = set()
+            general_link_budget = max(0, int(cfg.get("general_link_discovery_pages", 10)))
+            print(f"\n=== {company_name} ===")
+            print(f"Start URL: {seed} | allowed domains: {', '.join(sorted(allowed))} | page limit: {max_pages}")
+
+            while queue and len(seen) < max_pages:
+                url = canonical_url(queue.popleft())
+                if not url or url in seen:
                     continue
-                if response.status_code != 200:
-                    print(f"HTTP {response.status_code}: {url}")
+                parsed = urlparse(url)
+                host = normalized_host(url)
+                if parsed.scheme not in ("http", "https") or host not in allowed:
                     continue
-                content_type = response.headers.get("Content-Type", "").lower()
-                if "html" not in content_type and "xhtml" not in content_type:
-                    print(f"SKIP non-HTML content ({content_type or 'unknown content type'}): {url}")
+                seen.add(url)
+                allowed_by_robots, robots_message = robots_check(url, ua, session, robots_cache)
+                if not allowed_by_robots:
+                    blocked_total += 1
+                    print(f"SKIP robots.txt: {url} | {robots_message}")
                     continue
 
-                raw_soup = BeautifulSoup(response.text, "html.parser")
-                jobdata_list = jsonld_job_data(raw_soup)
-                clean_soup = BeautifulSoup(response.text, "html.parser")
-                for tag in clean_soup(["script", "style", "noscript", "svg", "nav", "footer", "header"]):
-                    tag.decompose()
-                heading = clean_soup.find("h1")
-                title_tag = clean_soup.find("title")
-                page_title = clean((heading or title_tag or clean_soup).get_text(" ", strip=True))[:300]
-                page_text = clean(clean_soup.get_text(" ", strip=True))
+                final_url = url
+                page_html: str | None = None
+                content_type = ""
+                try:
+                    response = session.get(url, timeout=25, allow_redirects=True)
+                    final_url = canonical_url(response.url)
+                    final_host = normalized_host(final_url)
+                    if final_host not in allowed:
+                        print(f"SKIP redirect outside allowed_domains: {url} -> {final_url}")
+                        continue
+                    if final_url != url:
+                        redirect_allowed, redirect_message = robots_check(final_url, ua, session, robots_cache)
+                        if not redirect_allowed:
+                            blocked_total += 1
+                            print(f"SKIP redirected URL by robots/access policy: {final_url} | {redirect_message}")
+                            continue
+                    if response.status_code in (401, 403, 429):
+                        print(f"HTTP {response.status_code}: {url} | not retrying restricted/rate-limited access with a browser")
+                        continue
+                    if response.status_code != 200:
+                        print(f"HTTP {response.status_code}: {url}")
+                        continue
+                    content_type = response.headers.get("Content-Type", "").lower()
+                    if "html" not in content_type and "xhtml" not in content_type:
+                        print(f"SKIP non-HTML content ({content_type or 'unknown content type'}): {url}")
+                        continue
+                    page_html = response.text
+                except requests.RequestException as exc:
+                    print(f"REQUEST ERROR {url}: {type(exc).__name__}: {exc}")
+                    # A transient requests failure may still be readable in the browser.
+                    # robots.txt has already been checked, and redirected hosts remain restricted.
+                    if browser_context is not None:
+                        rendered_html, rendered_url, render_note = render_page_with_playwright(browser_context, url, cfg)
+                        if rendered_html:
+                            if normalized_host(rendered_url) not in allowed:
+                                print(f"SKIP browser redirect outside allowed_domains: {url} -> {rendered_url}")
+                                continue
+                            if rendered_url != url:
+                                redirect_allowed, redirect_message = robots_check(rendered_url, ua, session, robots_cache)
+                                if not redirect_allowed:
+                                    blocked_total += 1
+                                    print(f"SKIP browser redirect by robots/access policy: {rendered_url} | {redirect_message}")
+                                    continue
+                            page_html, final_url = rendered_html, rendered_url
+                            rendered_total += 1
+                            print(f"PLAYWRIGHT: {url} | {render_note}")
+                        else:
+                            browser_errors += 1
+                            print(f"PLAYWRIGHT FALLBACK FAILED: {url} | {render_note}")
+                            continue
+                    else:
+                        continue
 
+                if not page_html:
+                    print(f"EMPTY HTML: {url}")
+                    continue
+
+                raw_soup, clean_soup, jobdata_list, page_title, page_text = parse_page_html(page_html)
                 is_detail = is_job_detail_url(final_url, seed, job_keywords)
                 has_job_signals = bool(re.search(
                     r"responsibilities|qualifications|required skills|years of experience|apply now|job description|jobposting|what you.?ll do|what you.?ll need|no longer accepting applications",
                     page_text, re.I,
                 ))
+
+                # Use Playwright only when static markup looks incomplete. This is particularly
+                # useful for React/Next/Vue career portals, client-rendered job cards and lazy lists.
+                if browser_context is not None and should_render_with_browser(
+                    raw_soup, jobdata_list, page_title, page_text, final_url, seed, allowed, job_keywords, cfg
+                ):
+                    rendered_html, rendered_url, render_note = render_page_with_playwright(browser_context, final_url, cfg)
+                    if rendered_html:
+                        if normalized_host(rendered_url) not in allowed:
+                            print(f"SKIP browser redirect outside allowed_domains: {final_url} -> {rendered_url}")
+                            continue
+                        if rendered_url != final_url:
+                            redirect_allowed, redirect_message = robots_check(rendered_url, ua, session, robots_cache)
+                            if not redirect_allowed:
+                                blocked_total += 1
+                                print(f"SKIP browser redirect by robots/access policy: {rendered_url} | {redirect_message}")
+                                continue
+                        page_html, final_url = rendered_html, rendered_url
+                        raw_soup, clean_soup, jobdata_list, page_title, page_text = parse_page_html(page_html)
+                        is_detail = is_job_detail_url(final_url, seed, job_keywords)
+                        has_job_signals = bool(re.search(
+                            r"responsibilities|qualifications|required skills|years of experience|apply now|job description|jobposting|what you.?ll do|what you.?ll need|no longer accepting applications",
+                            page_text, re.I,
+                        ))
+                        rendered_total += 1
+                        print(f"PLAYWRIGHT: {final_url} | {render_note} | rendered text chars={len(page_text)}")
+                    else:
+                        browser_errors += 1
+                        print(f"PLAYWRIGHT FALLBACK FAILED: {final_url} | {render_note}")
+
+                page_jobs_before = len(records)
                 if jobdata_list:
                     for jobdata in jobdata_list:
                         item_url = clean(jobdata.get("url", ""))
                         record_url = urljoin(final_url, item_url) if item_url else final_url
-                        # A structured URL is accepted only when it remains in an explicitly allowed domain.
                         if normalized_host(record_url) not in allowed:
-                            record_url = final_url
+                            print(f"SKIP structured job URL outside allowed_domains: {record_url}")
+                            continue
                         jobdata = {**jobdata, "url": record_url, "_specific_url": bool(item_url)}
                         record = extract_job_record(company_name, record_url, page_title, page_text, clean_soup, jobdata)
                         if record:
@@ -537,34 +819,66 @@ def main() -> None:
                         print(f"JOB FOUND [{record['job_status']}]: {record['job_title']} | {final_url}")
 
                 links_added = 0
+                job_targets: list[str] = []
+                general_targets: list[str] = []
                 for anchor in raw_soup.find_all("a", href=True):
                     href = clean(anchor.get("href"))
-                    if not href or href.startswith(("mailto:", "tel:", "javascript:")):
+                    if not href or href.startswith(("mailto:", "tel:", "javascript:", "data:")):
                         continue
                     target = canonical_url(urljoin(final_url, href))
                     target_parts = urlparse(target)
                     target_host = normalized_host(target)
                     if target_parts.scheme not in ("http", "https") or target_host not in allowed:
                         continue
-                    lower_url = target.lower()
-                    if any(word in lower_url for word in exclude_keywords):
+                    path_query = f"{target_parts.path}?{target_parts.query}".lower()
+                    if any(word in path_query for word in exclude_keywords):
                         continue
-                    if target not in seen and target not in queue:
-                        target_is_job_related = any(word in lower_url for word in job_keywords)
-                        if target_is_job_related or len(seen) < 10:
-                            queue.append(target)
-                            links_added += 1
-                visited_total += 1
-                print(f"Visited {len(seen)}/{max_pages}: {final_url} | jobs found this company: {len(records) - company_records_before} | links queued: {links_added}")
-            except requests.RequestException as exc:
-                print(f"REQUEST ERROR {url}: {type(exc).__name__}: {exc}")
-            except Exception as exc:
-                print(f"PAGE ERROR {url}: {type(exc).__name__}: {exc}")
-            time.sleep(delay)
+                    if target in seen or target in queue:
+                        continue
+                    if anchor_looks_job_related(anchor, target, job_keywords):
+                        job_targets.append(target)
+                    elif target not in general_links_queued:
+                        general_targets.append(target)
 
-        if not seen:
-            print(f"WARNING: No in-domain URLs were visited for {company_name}.")
-        print(f"Company summary: visited={len(seen)}, total URLs blocked by robots/access check={blocked_total}, jobs extracted={len(records) - company_records_before}")
+                # Always place job-specific links at the front of the queue so navigation
+                # links don't consume the page limit before actual roles are discovered.
+                for target in dict.fromkeys(job_targets):
+                    if target not in seen and target not in queue:
+                        queue.appendleft(target)
+                        links_added += 1
+                if general_link_budget > len(general_links_queued):
+                    remaining_general = general_link_budget - len(general_links_queued)
+                    for target in list(dict.fromkeys(general_targets))[:remaining_general]:
+                        if target not in seen and target not in queue:
+                            queue.append(target)
+                            general_links_queued.add(target)
+                            links_added += 1
+
+                visited_total += 1
+                print(
+                    f"Visited {len(seen)}/{max_pages}: {final_url} | "
+                    f"jobs found this company: {len(records) - company_records_before} | "
+                    f"jobs found on page: {len(records) - page_jobs_before} | links queued: {links_added}"
+                )
+                time.sleep(delay)
+
+            if not seen:
+                print(f"WARNING: No permitted in-domain URLs were visited for {company_name}.")
+            print(
+                f"Company summary: visited={len(seen)}, robots/access skips={blocked_total}, "
+                f"jobs extracted={len(records) - company_records_before}"
+            )
+    finally:
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        if playwright_driver is not None:
+            try:
+                playwright_driver.stop()
+            except Exception:
+                pass
 
     df = pd.DataFrame(records, columns=FIELDS)
     if not df.empty:
@@ -598,10 +912,13 @@ def main() -> None:
     except Exception as exc:
         print(f"WARNING: Could not create Excel export ({type(exc).__name__}: {exc}). CSV was saved.")
 
-    print(f"\nDone. Extracted {len(df)} candidate job records in this scan; visited {visited_total} HTML pages; robots/access skips={blocked_total}.")
+    print(
+        f"\nDone. Extracted {len(df)} candidate job records in this scan; visited {visited_total} HTML pages; "
+        f"Playwright-rendered pages={rendered_total}; browser fallback errors={browser_errors}; robots/access skips={blocked_total}."
+    )
     print(f"Created cumulative exports: {csv_path}, {excel_path}; PostgreSQL table: job_postings")
     if not records:
-        print("No job pages were extracted. Check the robots.txt explanations above, the career URL, allowed_domains, and whether the careers site renders jobs with JavaScript.")
+        print("No job pages were extracted. Check robots.txt messages, the career URL, allowed_domains, the scan logs and whether job cards are present in the rendered DOM.")
     print("Status note: 'Likely open' is inferred from page signals; verify each job on its official source page. A missing result in a crawl is not automatically treated as closed.")
 
 
