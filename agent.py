@@ -152,14 +152,14 @@ def main():
                 for tag in clean_soup(["script", "style", "noscript", "svg", "nav", "footer", "header"]): tag.decompose()
                 h1 = clean_soup.find("h1")
                 page_title = clean((h1 or clean_soup.find("title") or clean_soup).get_text(" ", strip=True))[:300]
-                text = clean(clean_soup.get_text(" ", strip=True))
+                page_text = clean(clean_soup.get_text(" ", strip=True))
                 current_url = resp.url
                 url_l = current_url.lower()
                 is_job_url = any(k in url_l for k in cfg.get("job_url_keywords", []))
-                has_job_signals = bool(re.search(r"responsibilities|qualifications|required skills|years of experience|apply now|job description|jobposting", text, re.I))
-                if (jobdata or (is_job_url and has_job_signals and len(text) > 400)):
-                    sections = extract_sections(clean_soup, text)
-                    inferred = infer_fields(jobdata.get("job_title") or page_title, jobdata.get("description") or text)
+                has_job_signals = bool(re.search(r"responsibilities|qualifications|required skills|years of experience|apply now|job description|jobposting", page_text, re.I))
+                if (jobdata or (is_job_url and has_job_signals and len(page_text) > 400)):
+                    sections = extract_sections(clean_soup, page_text)
+                    inferred = infer_fields(jobdata.get("job_title") or page_title, jobdata.get("description") or page_text)
                     records.append({
                         "job_title": jobdata.get("job_title") or inferred["job_title"],
                         "company": jobdata.get("company") or company_name,
