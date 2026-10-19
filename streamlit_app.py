@@ -6,11 +6,13 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
+from sqlalchemy import create_engine, text as sql_text
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "config.json"
@@ -18,53 +20,44 @@ CSV = ROOT / "job_requirements.csv"
 XLSX = ROOT / "job_requirements.xlsx"
 AGENT = ROOT / "agent.py"
 
-st.set_page_config(
-    page_title="TalentSignal | Job Intelligence",
-    page_icon="🎯",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="RoleRadar | Hiring Intelligence", page_icon="🎯", layout="wide", initial_sidebar_state="expanded")
 
 # ---------- Styling ----------
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
-    :root { --ink:#172033; --muted:#667085; --line:#e7ebf2; --blue:#315efb; --teal:#17a89b; }
-    html, body, [class*="css"] { font-family:'DM Sans',sans-serif; }
-    .stApp { background: #f5f7fb; }
-    [data-testid="stHeader"] { background: rgba(245,247,251,.92); }
-    .block-container { padding-top: 1.6rem; padding-bottom: 3rem; max-width: 1500px; }
-    [data-testid="stSidebar"] { background:#111a2e; border-right:1px solid #202b43; }
-    [data-testid="stSidebar"] * { color:#edf2ff; }
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color:#bdc7dd; }
-    .brand { font-family:'Manrope',sans-serif; font-size:1.05rem; font-weight:800; letter-spacing:-.03em; color:white; padding:.4rem 0 1.4rem; }
-    .brand span { color:#73e0d3; }
-    .eyebrow { color:#315efb; font-size:.72rem; text-transform:uppercase; letter-spacing:.14em; font-weight:800; margin-bottom:.4rem; }
-    .hero { background:linear-gradient(120deg,#17233f 0%,#233c71 68%,#236c7b 100%); padding:1.8rem 2rem; border-radius:22px; color:white; margin:.25rem 0 1.35rem; box-shadow:0 12px 30px rgba(29,54,100,.12); }
-    .hero h1 { color:white; font-family:'Manrope',sans-serif; font-weight:800; font-size:2.05rem; letter-spacing:-.045em; line-height:1.15; margin:0 0 .55rem; }
-    .hero p { color:#d6e1f7; font-size:.98rem; margin:0; max-width:800px; }
-    .hero-pill { display:inline-block; margin-top:1rem; padding:.35rem .7rem; border:1px solid rgba(255,255,255,.24); border-radius:999px; color:#e7fffb; font-size:.75rem; background:rgba(255,255,255,.08); }
-    .section-head { font-family:'Manrope',sans-serif; font-size:1.08rem; font-weight:800; letter-spacing:-.02em; color:#172033; margin:.2rem 0 .75rem; }
-    .subtle { color:#667085; font-size:.88rem; }
-    .metric-card { background:white; border:1px solid #e7ebf2; border-radius:16px; padding:1rem 1.15rem; min-height:112px; }
-    .metric-label { color:#667085; font-size:.78rem; font-weight:600; margin-bottom:.55rem; }
-    .metric-value { color:#172033; font-family:'Manrope',sans-serif; font-size:1.85rem; font-weight:800; line-height:1.05; letter-spacing:-.04em; }
-    .metric-note { color:#8791a5; font-size:.74rem; margin-top:.45rem; }
-    .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#18b981; margin-right:7px; }
-    .company-card { background:white; border:1px solid #e7ebf2; border-radius:13px; padding:.85rem 1rem; margin-bottom:.55rem; }
-    .company-name { color:#172033; font-weight:700; font-size:.92rem; }
-    .company-url { color:#667085; font-size:.78rem; overflow-wrap:anywhere; }
-    div.stButton > button, div.stFormSubmitButton > button { border-radius:10px; font-weight:700; min-height:2.55rem; }
-    div.stButton > button[kind="primary"], div.stFormSubmitButton > button[kind="primary"] { background:#315efb; border:1px solid #315efb; }
-    [data-testid="stMetric"] { background:white; border:1px solid #e7ebf2; padding:1rem; border-radius:14px; }
-    [data-testid="stDataFrame"] { border:1px solid #e7ebf2; border-radius:12px; overflow:hidden; }
-    .small-note { color:#7a8498; font-size:.76rem; }
-    hr { border-color:#e7ebf2; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown(r"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
+:root { --ink:#17233b; --muted:#6b7890; --line:#e5eaf2; --blue:#315efb; --teal:#18b6a4; }
+html, body, [class*="css"] { font-family:'DM Sans',sans-serif; }
+.stApp { background:#f6f8fc; }
+[data-testid="stHeader"] { background:rgba(246,248,252,.9); }
+.block-container { max-width:1480px; padding-top:1.4rem; padding-bottom:3rem; }
+[data-testid="stSidebar"] { background:#111b30; border-right:1px solid #26324b; }
+[data-testid="stSidebar"] * { color:#edf3ff; }
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color:#b9c5dc; }
+.brand-wrap { display:flex; align-items:center; gap:11px; padding:.4rem 0 1.4rem; }
+.brand-mark { width:44px;height:44px;border-radius:14px;background:linear-gradient(140deg,#5b78ff,#20c6ad);display:flex;align-items:center;justify-content:center;color:#fff;font-size:23px;font-weight:800;box-shadow:0 8px 22px #172d5b70; }
+.brand-name { font:800 1.2rem 'Manrope',sans-serif;letter-spacing:-.04em;color:white; }
+.brand-tag { font-size:.68rem;color:#9eacc7;letter-spacing:.12em;text-transform:uppercase;margin-top:2px; }
+.hero { background:linear-gradient(115deg,#172442 0%,#243f78 63%,#167b7d 100%); padding:1.7rem 2rem; border-radius:22px; color:white; margin:.2rem 0 1.25rem; box-shadow:0 14px 32px #213d6d18; }
+.hero-kicker { font-size:.72rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:#91f0df;margin-bottom:.55rem; }
+.hero h1 { color:white;font:800 clamp(1.7rem,3vw,2.35rem) 'Manrope',sans-serif;letter-spacing:-.055em;line-height:1.12;margin:0 0 .55rem; }
+.hero p { color:#d9e5fa;font-size:.96rem;margin:0;max-width:780px; }
+.hero-pills { display:flex;flex-wrap:wrap;gap:8px;margin-top:1rem; }
+.hero-pill { border:1px solid #ffffff3a;background:#ffffff12;border-radius:999px;padding:.35rem .7rem;font-size:.75rem;color:#f0fffd; }
+.section-title { font:800 1.12rem 'Manrope',sans-serif;color:#17233b;letter-spacing:-.025em;margin:.3rem 0 .2rem; }
+.section-subtitle { color:#718098;font-size:.88rem;margin-bottom:.8rem; }
+.metric-card { background:white;border:1px solid var(--line);border-radius:16px;padding:1rem 1.1rem;min-height:108px; }
+.metric-label { color:#718098;font-size:.74rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-bottom:.5rem; }
+.metric-value { color:#17233b;font:800 1.8rem 'Manrope',sans-serif;letter-spacing:-.05em;line-height:1.05; }
+.metric-note { color:#8a95a8;font-size:.74rem;margin-top:.4rem; }
+.info-card { background:white;border:1px solid var(--line);border-radius:16px;padding:1rem 1.1rem; }
+.small-muted { color:#718098;font-size:.82rem; }
+div.stButton > button, div.stFormSubmitButton > button { border-radius:11px;font-weight:700;min-height:2.65rem; }
+div.stButton > button[kind="primary"], div.stFormSubmitButton > button[kind="primary"] { background:#315efb;border:1px solid #315efb; }
+[data-testid="stDataFrame"] { border:1px solid var(--line);border-radius:12px;overflow:hidden; }
+hr { border-color:#e5eaf2; }
+</style>
+""", unsafe_allow_html=True)
 
 
 def get_database_url() -> str:
@@ -81,7 +74,12 @@ def load_config() -> dict:
     try:
         return json.loads(CONFIG.read_text(encoding="utf-8"))
     except Exception:
-        return {"companies": [], "max_pages_per_domain": 80, "request_delay_seconds": 2.0}
+        return {"companies": [], "max_pages_per_domain": 80, "request_delay_seconds": 2.0,
+                "job_url_keywords": ["job", "career", "opening", "position", "requisition", "vacancy"]}
+
+
+def save_config(cfg: dict) -> None:
+    CONFIG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
 def normalize_url(value: str) -> str:
@@ -91,289 +89,280 @@ def normalize_url(value: str) -> str:
     return value
 
 
-def read_results() -> pd.DataFrame:
-    if not CSV.exists():
+def get_local_results() -> pd.DataFrame:
+    if CSV.exists():
+        try:
+            return pd.read_csv(CSV).fillna("")
+        except Exception:
+            pass
+    return pd.DataFrame()
+
+
+def get_db_results() -> pd.DataFrame:
+    url = get_database_url()
+    if not url:
         return pd.DataFrame()
+    if url.startswith("postgres://"):
+        url = "postgresql+psycopg://" + url[len("postgres://"):]
+    elif url.startswith("postgresql://") and "+" not in url.split(":", 1)[0]:
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
     try:
-        return pd.read_csv(CSV).fillna("")
+        engine = create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
+        try:
+            with engine.connect() as conn:
+                return pd.read_sql(sql_text("SELECT * FROM job_postings"), conn).fillna("")
+        finally:
+            engine.dispose()
     except Exception:
         return pd.DataFrame()
 
 
+def get_results() -> pd.DataFrame:
+    db_data = get_db_results()
+    return db_data if not db_data.empty else get_local_results()
+
+
 def metric_card(label: str, value: str, note: str) -> None:
-    st.markdown(
-        f'<div class="metric-card"><div class="metric-label">{label}</div>'
-        f'<div class="metric-value">{value}</div><div class="metric-note">{note}</div></div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div><div class="metric-note">{note}</div></div>', unsafe_allow_html=True)
 
 
+def start_scan(mode: str, max_pages: int, delay: float) -> None:
+    cfg = load_config()
+    companies = st.session_state.get("companies", [])
+    if not companies:
+        st.error("Add at least one company before running a scan.")
+        return
+    if not get_database_url():
+        st.error("DATABASE_URL is not configured. Add it in Render → Environment.")
+        return
+    if not AGENT.exists():
+        st.error("agent.py was not found beside streamlit_app.py.")
+        return
+    cfg["companies"] = []
+    for company in companies:
+        host = urlparse(company["career_url"]).hostname or ""
+        cfg["companies"].append({"name": company["name"], "career_url": company["career_url"], "allowed_domains": [host.removeprefix("www.")]})
+    cfg["max_pages_per_domain"] = int(max_pages)
+    cfg["request_delay_seconds"] = float(delay)
+    save_config(cfg)
+    st.session_state.scan_mode = mode
+    st.session_state.scan_requested = True
+    st.session_state.last_scan_status = "Queued"
+
+
+# ---------- State ----------
 if "companies" not in st.session_state:
-    old_companies = load_config().get("companies", [])
-    st.session_state.companies = [
-        {"name": c.get("name", ""), "career_url": c.get("career_url", "")}
-        for c in old_companies
-        if c.get("career_url") and "example.com" not in c.get("career_url", "")
-    ]
+    old = load_config().get("companies", [])
+    st.session_state.companies = [{"name": c.get("name", ""), "career_url": c.get("career_url", "")} for c in old if c.get("career_url") and "example.com" not in c.get("career_url", "")]
 if "scan_log" not in st.session_state:
     st.session_state.scan_log = []
 if "last_scan_status" not in st.session_state:
     st.session_state.last_scan_status = "Not run yet"
 
-# ---------- Sidebar ----------
+# ---------- Sidebar brand/navigation ----------
 with st.sidebar:
-    st.markdown('<div class="brand">Talent<span>Signal</span> <span style="color:#9eabc5;font-weight:500">/ JOB INTELLIGENCE</span></div>', unsafe_allow_html=True)
-    st.markdown("### Workspace")
-    st.caption("Career-page research workspace")
-    page = st.radio(
-        "Navigate",
-        ["Overview", "Companies", "Extracted jobs", "Scan activity"],
-        label_visibility="collapsed",
-    )
-    st.markdown("---")
-    db_url = get_database_url()
-    if db_url:
-        st.markdown('<span class="status-dot"></span> **PostgreSQL configured**', unsafe_allow_html=True)
-        st.caption("Neon connection variable detected")
+    st.markdown('<div class="brand-wrap"><div class="brand-mark">R</div><div><div class="brand-name">RoleRadar</div><div class="brand-tag">Hiring intelligence</div></div></div>', unsafe_allow_html=True)
+    page = st.radio("Workspace", ["Dashboard", "Add Company", "Run Scan", "Scan Activity"], label_visibility="visible")
+    st.divider()
+    if get_database_url():
+        st.success("Neon PostgreSQL configured")
     else:
-        st.markdown("🔴 **Database not configured**")
-        st.caption("Add DATABASE_URL in Render → Environment.")
-    st.markdown("---")
-    st.caption("Rules-based extraction · No paid AI APIs")
-    st.caption("Crawls only configured domains and respects robots.txt.")
+        st.warning("Database connection missing")
+        st.caption("Set DATABASE_URL in Render → Environment.")
+    st.caption("Python crawler · Structured job requirements")
+    st.caption("Robots.txt-aware crawling; no paid AI APIs.")
 
-# ---------- Data and page header ----------
-data = read_results()
+# ---------- Header ----------
+st.markdown('''<div class="hero"><div class="hero-kicker">Career-page intelligence workspace</div><h1>Meet your next hiring signal.</h1><p>Scan company career pages, turn job descriptions into structured requirements, and explore hiring demand role by role.</p><div class="hero-pills"><span class="hero-pill">✦ Role-wise insights</span><span class="hero-pill">↗ Controlled scans</span><span class="hero-pill">▤ PostgreSQL-backed results</span></div></div>''', unsafe_allow_html=True)
+
+# ---------- Dashboard ----------
+data = get_results()
+company_count = data["company"].nunique() if not data.empty and "company" in data.columns else 0
 job_count = len(data)
-company_count = data["company"].nunique() if "company" in data.columns and not data.empty else 0
-queued_count = len(st.session_state.companies)
 
-st.markdown(
-    '<div class="hero"><div class="eyebrow" style="color:#8ce7dc">JOB REQUIREMENTS EXTRACTION</div>'
-    '<h1>Turn career pages into<br>structured hiring intelligence.</h1>'
-    '<p>Collect job listings from company career sites, extract consistent requirements, and review the results in one workspace.</p>'
-    '<span class="hero-pill">● Python crawler &nbsp; · &nbsp; PostgreSQL storage &nbsp; · &nbsp; CSV / Excel exports</span></div>',
-    unsafe_allow_html=True,
-)
+if page == "Dashboard":
+    st.markdown('<div class="section-title">Hiring dashboard</div><div class="section-subtitle">A quick view of extracted roles and company coverage.</div>', unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4, gap="medium")
+    with m1: metric_card("Extracted job records", f"{job_count:,}", "Current records available")
+    with m2: metric_card("Companies covered", f"{company_count:,}", "Companies represented in jobs")
+    with m3: metric_card("Companies in queue", f"{len(st.session_state.companies):,}", "Career pages ready to scan")
+    with m4: metric_card("Last scan", st.session_state.last_scan_status, "Latest run in this session")
 
-# ---------- Overview ----------
-if page == "Overview":
-    st.markdown('<div class="section-head">Workspace overview</div>', unsafe_allow_html=True)
-    c1, c2, c3, c4 = st.columns(4, gap="medium")
-    with c1: metric_card("JOBS EXTRACTED", f"{job_count:,}", "Rows in the latest local export")
-    with c2: metric_card("COMPANIES COVERED", f"{company_count:,}", "Companies represented in results")
-    with c3: metric_card("SITES IN QUEUE", f"{queued_count:,}", "Career pages ready to scan")
-    with c4: metric_card("DATABASE", "Connected" if db_url else "Setup needed", "Neon PostgreSQL" if db_url else "Set DATABASE_URL in Render")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    left, right = st.columns([1.25, .75], gap="large")
+    left, right = st.columns([1.35, 1], gap="large")
     with left:
-        st.markdown('<div class="section-head">Get started</div>', unsafe_allow_html=True)
-        with st.container(border=True):
-            st.markdown("**01 · Add career pages**")
-            st.caption("Enter the official careers or jobs URL for each company.")
-            if st.button("Manage companies →", use_container_width=True):
-                st.session_state._nav_to = "Companies"
-                st.rerun()
-            st.markdown("---")
-            st.markdown("**02 · Run a controlled scan**")
-            st.caption("Set a page limit and request delay before starting the crawler.")
-            if st.button("Open scan controls →", type="primary", use_container_width=True):
-                st.session_state._nav_to = "Companies"
-                st.rerun()
+        st.markdown('<div class="section-title">Job role-wise breakdown</div><div class="section-subtitle">Most frequently detected job titles.</div>', unsafe_allow_html=True)
+        if not data.empty and "job_title" in data.columns:
+            role_counts = data["job_title"].astype(str).str.strip().replace("", "Untitled role").value_counts().head(12)
+            if not role_counts.empty:
+                chart_df = role_counts.rename_axis("Job role").reset_index(name="Jobs")
+                st.bar_chart(chart_df.set_index("Job role"), horizontal=True, use_container_width=True)
+                st.dataframe(chart_df, use_container_width=True, hide_index=True, height=280)
+            else:
+                st.info("No job titles found yet. Run a scan to populate role insights.")
+        else:
+            st.info("Your role-wise dashboard will appear after the first successful scan.")
     with right:
-        st.markdown('<div class="section-head">Latest workspace status</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Quick actions</div><div class="section-subtitle">Manage sources and collect fresh job data.</div>', unsafe_allow_html=True)
         with st.container(border=True):
-            st.markdown(f"**Last scan:** {st.session_state.last_scan_status}")
-            st.markdown(f"**Career pages queued:** {queued_count}")
-            st.markdown(f"**Export available:** {'Yes' if CSV.exists() else 'Not yet'}")
+            st.markdown("**＋ Add a company**")
+            st.caption("Save an official career-page URL to your scan queue.")
+            if st.button("Open Add Company", use_container_width=True):
+                st.session_state.next_page = "Add Company"
+                st.info("Choose **Add Company** from the sidebar to continue.")
             st.markdown("---")
-            st.markdown("<span class='small-note'>Tip: start with one careers URL to validate extraction before adding more companies.</span>", unsafe_allow_html=True)
+            st.markdown("**▶ Run a scan**")
+            st.caption("Scan configured career pages or review recent job postings when date metadata is available.")
+            if st.button("Open scan options", type="primary", use_container_width=True):
+                st.info("Choose **Run Scan** from the sidebar to start.")
+        st.markdown("<div class='small-muted'>Results are stored in Neon PostgreSQL. Local CSV/Excel exports are optional and may not persist across Render restarts.</div>", unsafe_allow_html=True)
 
     if not data.empty:
-        st.markdown('<div class="section-head">Latest extracted records</div>', unsafe_allow_html=True)
-        preferred = [c for c in ["company", "job_title", "location_mention", "employment_type_mention", "source_url"] if c in data.columns]
-        st.dataframe(data[preferred].head(8), use_container_width=True, hide_index=True)
-        if st.button("View all extracted jobs →"):
-            st.session_state._nav_to = "Extracted jobs"
-            st.rerun()
+        st.markdown('<div class="section-title">Latest extracted jobs</div>', unsafe_allow_html=True)
+        cols = [c for c in ["job_title", "company", "location_mention", "employment_type_mention", "source_url"] if c in data.columns]
+        st.dataframe(data[cols].head(10), use_container_width=True, hide_index=True)
 
-# ---------- Companies and scan ----------
-elif page == "Companies":
-    st.markdown('<div class="section-head">Company sources</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtle">Add official career pages, maintain your scan queue, and control crawl depth.</div>', unsafe_allow_html=True)
-    add_col, queue_col = st.columns([.9, 1.1], gap="large")
-    with add_col:
+elif page == "Add Company":
+    st.markdown('<div class="section-title">Add a company</div><div class="section-subtitle">Use the company’s official careers or job listings page.</div>', unsafe_allow_html=True)
+    form_col, list_col = st.columns([.9, 1.1], gap="large")
+    with form_col:
         with st.container(border=True):
-            st.markdown("**Add a company**")
-            with st.form("add_company", clear_on_submit=True):
-                company_name = st.text_input("Company name", placeholder="e.g. Acme Insurance")
-                career_url = st.text_input("Career page URL", placeholder="https://company.com/careers")
-                add = st.form_submit_button("＋ Add to queue", type="primary", use_container_width=True)
-            if add:
+            with st.form("company_form", clear_on_submit=True):
+                name = st.text_input("Company name", placeholder="e.g. Techment")
+                career_url = st.text_input("Career page URL", placeholder="https://www.example.com/careers")
+                submitted = st.form_submit_button("＋ Add company", type="primary", use_container_width=True)
+            if submitted:
                 candidate = normalize_url(career_url)
                 parsed = urlparse(candidate)
-                if not candidate:
-                    st.error("Enter a career page URL first.")
-                elif parsed.scheme not in ("http", "https") or not parsed.hostname or "." not in parsed.hostname:
-                    st.error("Enter a valid URL, e.g. https://company.com/careers")
+                if not candidate or parsed.scheme not in ("http", "https") or not parsed.hostname or "." not in parsed.hostname:
+                    st.error("Enter a valid career page URL, such as https://company.com/careers.")
                 elif any(c["career_url"].rstrip("/") == candidate.rstrip("/") for c in st.session_state.companies):
-                    st.warning("That URL is already in your queue.")
+                    st.warning("That career URL is already in your queue.")
                 else:
                     host = parsed.hostname.removeprefix("www.")
-                    st.session_state.companies.append({
-                        "name": company_name.strip() or host.split(".")[0].replace("-", " ").title(),
-                        "career_url": candidate,
-                    })
-                    st.success("Company added to the scan queue.")
+                    company_name = name.strip() or host.split(".")[0].replace("-", " ").title()
+                    st.session_state.companies.append({"name": company_name, "career_url": candidate})
+                    st.success(f"{company_name} added to your queue.")
                     st.rerun()
-            st.markdown("---")
-            st.markdown("**Scan settings**")
-            max_pages = st.slider("Maximum pages per company", min_value=10, max_value=300, value=80, step=10)
-            delay = st.slider("Delay between requests", min_value=1.0, max_value=10.0, value=2.0, step=0.5, help="A higher delay is gentler on the source website.")
-            st.caption("The crawler stays on the host you enter and follows robots.txt.")
-    with queue_col:
+    with list_col:
         with st.container(border=True):
-            st.markdown(f"**Scan queue** &nbsp; <span style='color:#667085;font-weight:500'>({len(st.session_state.companies)} sources)</span>", unsafe_allow_html=True)
-            if st.session_state.companies:
-                for i, company in enumerate(list(st.session_state.companies)):
-                    st.markdown(
-                        f'<div class="company-card"><div class="company-name">{company["name"]}</div>'
-                        f'<div class="company-url">{company["career_url"]}</div></div>',
-                        unsafe_allow_html=True,
-                    )
-                    _, remove_col = st.columns([4, 1])
-                    if remove_col.button("Remove", key=f"remove_{i}", use_container_width=True):
-                        st.session_state.companies.pop(i)
-                        st.rerun()
-            else:
-                st.info("Your queue is empty. Add a career page to begin.")
-            st.markdown("---")
-            if not db_url:
-                st.warning("Add DATABASE_URL in Render → Environment before scanning.")
-            if st.button("▶  Run scan", type="primary", disabled=(not st.session_state.companies or not db_url or not AGENT.exists()), use_container_width=True):
-                cfg = load_config()
-                cfg["companies"] = []
-                for company in st.session_state.companies:
-                    host = urlparse(company["career_url"]).hostname or ""
-                    cfg["companies"].append({"name": company["name"], "career_url": company["career_url"], "allowed_domains": [host.removeprefix("www.")]})
-                cfg["max_pages_per_domain"] = int(max_pages)
-                cfg["request_delay_seconds"] = float(delay)
-                CONFIG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-                for file_path in (CSV, XLSX):
-                    try: file_path.unlink()
-                    except FileNotFoundError: pass
-                st.session_state.scan_log = []
-                st.session_state.last_scan_status = "Running"
-                st.session_state.scan_requested = True
-                st.rerun()
+            st.markdown(f"**Company queue · {len(st.session_state.companies)} sources**")
+            if not st.session_state.companies:
+                st.info("No companies added yet.")
+            for i, company in enumerate(list(st.session_state.companies)):
+                st.markdown(f"**{company['name']}**  \n`{company['career_url']}`")
+                if st.button("Remove", key=f"remove_company_{i}"):
+                    st.session_state.companies.pop(i)
+                    st.rerun()
+                st.divider()
 
-# Run requested scan after rerun so progress UI is displayed
+elif page == "Run Scan":
+    st.markdown('<div class="section-title">Run a scan</div><div class="section-subtitle">Choose how you want to collect job information.</div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown(f"**Ready to scan:** {len(st.session_state.companies)} company career page(s)")
+        c1, c2 = st.columns(2)
+        with c1:
+            max_pages = st.slider("Maximum pages per company", min_value=10, max_value=300, value=int(load_config().get("max_pages_per_domain", 80)), step=10)
+        with c2:
+            delay = st.slider("Delay between requests (seconds)", min_value=1.0, max_value=10.0, value=float(load_config().get("request_delay_seconds", 2.0)), step=0.5)
+        st.caption("The crawler checks robots.txt and stays within the configured company domain. Larger scans can take several minutes.")
+        run1, run2 = st.columns(2)
+        with run1:
+            if st.button("▶ Run full scan", type="primary", use_container_width=True):
+                start_scan("all", max_pages, delay)
+                st.rerun()
+        with run2:
+            if st.button("◷ Run scan — past 30 days", use_container_width=True):
+                start_scan("30_days", max_pages, delay)
+                st.rerun()
+    if st.session_state.get("scan_mode") == "30_days":
+        st.info("This option runs the crawl and then limits the displayed results to postings with a published date in the last 30 days. The current agent.py does not yet save a date_posted field, so accurate 30-day filtering requires a small companion update to agent.py.")
+    if not get_database_url():
+        st.warning("Add DATABASE_URL to Render → Environment before scanning.")
+    if not st.session_state.companies:
+        st.warning("Add at least one company first.")
+
+elif page == "Scan Activity":
+    st.markdown('<div class="section-title">Scan activity</div><div class="section-subtitle">Latest run status and crawler output.</div>', unsafe_allow_html=True)
+    st.metric("Last scan status", st.session_state.last_scan_status)
+    if st.session_state.scan_log:
+        st.code("\n".join(st.session_state.scan_log[-120:]), language="text")
+        st.download_button("Download scan log", "\n".join(st.session_state.scan_log), file_name="role_radar_scan_log.txt", mime="text/plain")
+    else:
+        st.info("No scan logs in this session yet.")
+
+# ---------- Execute scan with live log/progress ----------
 if st.session_state.get("scan_requested"):
     st.session_state.scan_requested = False
-    st.markdown('<div class="section-head">Scan activity</div>', unsafe_allow_html=True)
+    mode = st.session_state.get("scan_mode", "all")
+    st.markdown('<div class="section-title">Scan in progress</div><div class="section-subtitle">Keep this page open while the crawler runs.</div>', unsafe_allow_html=True)
     progress = st.progress(0, text="Starting crawler…")
+    status = st.empty()
     log_box = st.empty()
     lines: list[str] = []
     try:
         env = os.environ.copy()
-        if db_url:
-            env["DATABASE_URL"] = db_url
-        proc = subprocess.Popen(
-            [sys.executable, "-u", str(AGENT)], cwd=str(ROOT), env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-        )
+        env["PYTHONUNBUFFERED"] = "1"
+        if get_database_url():
+            env["DATABASE_URL"] = get_database_url()
+        # The current crawler doesn't yet implement a published-date cutoff. This variable is
+        # available for the companion agent.py update and does not affect full scans.
+        if mode == "30_days":
+            env["SCAN_POSTED_WITHIN_DAYS"] = "30"
+        proc = subprocess.Popen([sys.executable, "-u", str(AGENT)], cwd=str(ROOT), env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         start = time.time()
+        page_total = 0
         while True:
             line = proc.stdout.readline() if proc.stdout else ""
             if line:
-                lines.append(line.rstrip())
-                st.session_state.scan_log = lines[-300:]
-                log_box.code("\n".join(lines[-80:]), language="text")
-                progress.progress(min(95, max(5, int((time.time() - start) / 18 * 5))), text="Scanning career pages…")
+                line = line.rstrip()
+                lines.append(line)
+                st.session_state.scan_log = lines[-500:]
+                match = re.search(r"Visited\s+(\d+)/(\d+)", line)
+                if match:
+                    visited, limit = int(match.group(1)), max(1, int(match.group(2)))
+                    page_total += 1
+                    # A practical estimate from pages visited; final completion sets 100%.
+                    pct = min(94, max(5, int(visited / limit * 90)))
+                    progress.progress(pct, text=f"Scanning career pages · {visited}/{limit} pages for current company")
+                    status.caption(f"Elapsed: {int(time.time() - start)} sec · Pages reported: {page_total}")
+                else:
+                    progress.progress(min(90, max(5, int((time.time() - start) / 25 * 5))), text="Scanning career pages…")
+                log_box.code("\n".join(lines[-35:]), language="text")
             elif proc.poll() is not None:
                 break
             else:
                 time.sleep(.1)
             if time.time() - start > 1800:
                 proc.kill()
-                lines.append("Scan stopped after 30 minutes. Try fewer pages or companies.")
+                lines.append("Scan stopped after 30 minutes. Try fewer companies or fewer pages.")
                 break
         rc = proc.wait()
-        progress.progress(100, text="Scan finished")
+        progress.progress(100 if rc == 0 else 0, text="Scan completed" if rc == 0 else "Scan failed")
+        st.session_state.last_scan_status = "Completed" if rc == 0 else "Failed — review logs"
         if rc == 0:
-            st.session_state.last_scan_status = "Completed"
-            st.success("Scan completed. Open Extracted jobs to review results.")
+            st.success("Scan completed. Open Dashboard to review extracted roles.")
+            if mode == "30_days":
+                result = get_results()
+                if "date_posted" in result.columns:
+                    dates = pd.to_datetime(result["date_posted"], errors="coerce", utc=True)
+                    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=30)
+                    recent = result.loc[dates >= cutoff]
+                    st.info(f"{len(recent):,} postings have a published date within the past 30 days.")
+                    st.dataframe(recent, use_container_width=True, hide_index=True)
+                else:
+                    st.warning("The scan succeeded, but agent.py does not currently save date_posted. The app cannot reliably identify jobs published in the past 30 days until that field is added to the crawler.")
         else:
-            st.session_state.last_scan_status = "Failed — review logs"
-            st.error("The crawler exited with an error. Review the log output below.")
-        st.session_state.scan_log = lines[-300:]
+            st.error("The crawler exited with an error. Review the log below.")
+        st.session_state.scan_log = lines[-500:]
         if lines:
             log_box.code("\n".join(lines[-100:]), language="text")
     except Exception as exc:
         st.session_state.last_scan_status = "Failed to start"
         st.error(f"Could not start the crawler: {exc}")
 
-# ---------- Results ----------
-elif page == "Extracted jobs":
-    st.markdown('<div class="section-head">Extracted job requirements</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtle">Search, filter, inspect, and export the latest extraction results.</div>', unsafe_allow_html=True)
-    data = read_results()
-    if data.empty:
-        st.info("No local export is available yet. Add a company and run a scan first. If the scan completed but this view is empty after a restart, the export file may not persist on the hosting instance.")
-    else:
-        a, b, c = st.columns(3)
-        a.metric("Jobs", len(data))
-        b.metric("Companies", data["company"].nunique() if "company" in data else 0)
-        c.metric("Extracted fields", len(data.columns))
-        search = st.text_input("Search all fields", placeholder="Try a title, company, location, or skill…")
-        company_options = sorted(data["company"].astype(str).replace("", "Unknown").unique()) if "company" in data else []
-        selected_companies = st.multiselect("Filter by company", company_options, placeholder="All companies")
-        shown = data.copy()
-        if search:
-            mask = shown.astype(str).apply(lambda col: col.str.contains(search, case=False, na=False, regex=False)).any(axis=1)
-            shown = shown[mask]
-        if selected_companies and "company" in shown:
-            shown = shown[shown["company"].replace("", "Unknown").isin(selected_companies)]
-        st.caption(f"Showing {len(shown):,} of {len(data):,} records")
-        st.dataframe(shown, use_container_width=True, hide_index=True, height=520)
-        dl1, dl2 = st.columns(2)
-        dl1.download_button("⬇ Download CSV", data=shown.to_csv(index=False).encode("utf-8-sig"), file_name="job_requirements.csv", mime="text/csv", use_container_width=True)
-        if XLSX.exists():
-            try:
-                dl2.download_button("⬇ Download Excel", XLSX.read_bytes(), file_name="job_requirements.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-            except Exception:
-                dl2.download_button("⬇ Download filtered CSV", data=shown.to_csv(index=False).encode("utf-8-sig"), file_name="job_requirements_filtered.csv", mime="text/csv", use_container_width=True)
-        else:
-            dl2.download_button("⬇ Download filtered CSV", data=shown.to_csv(index=False).encode("utf-8-sig"), file_name="job_requirements_filtered.csv", mime="text/csv", use_container_width=True)
-        st.caption("Extraction is heuristic. Review each source URL and verify important requirements before using them for decisions.")
-
-# ---------- Activity ----------
-elif page == "Scan activity":
-    st.markdown('<div class="section-head">Scan activity & diagnostics</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtle">Review the latest crawler status and diagnostic output.</div>', unsafe_allow_html=True)
-    a, b = st.columns(2)
-    a.metric("Last scan", st.session_state.last_scan_status)
-    b.metric("Log lines retained", len(st.session_state.scan_log))
-    if st.session_state.scan_log:
-        st.code("\n".join(st.session_state.scan_log), language="text")
-        st.download_button("Download scan log", "\n".join(st.session_state.scan_log), file_name="scan_log.txt", mime="text/plain")
-    else:
-        st.info("No scan log in this session yet. Run a scan from Companies to populate activity.")
-    with st.expander("How extraction works and known limitations"):
-        st.markdown(
-            "- Crawls accessible pages on the configured company host.\n"
-            "- Checks robots.txt and uses a configurable delay between requests.\n"
-            "- Extracts common job metadata and requirements using rules and page structure.\n"
-            "- Uses PostgreSQL for persistent database storage; CSV/Excel files on Render may not persist across restarts.\n"
-            "- Does not bypass logins, CAPTCHAs, paywalls, or other access controls.\n"
-            "- Some JavaScript-heavy career portals may require a dedicated parser.\n"
-            "- Restrict access to this dashboard if you deploy it publicly, since users can trigger scans."
-        )
-
-# Navigation click bridge for overview shortcuts
-if st.session_state.get("_nav_to"):
-    target = st.session_state.pop("_nav_to")
-    # Streamlit radio state is updated on the next run by assigning its widget key only if keyed.
-    # Avoid changing the current radio widget programmatically; the sidebar remains the navigation source.
-    st.info(f"Use the sidebar to open **{target}**.")
+# ---------- Exports available from dashboard data ----------
+if not data.empty and page == "Dashboard":
+    with st.expander("Export current job records"):
+        st.download_button("Download CSV", data.to_csv(index=False).encode("utf-8-sig"), file_name="role_radar_jobs.csv", mime="text/csv")
+        st.caption("The crawler also creates a local Excel file when supported by the installed dependencies.")
