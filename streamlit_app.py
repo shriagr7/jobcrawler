@@ -108,19 +108,35 @@ def normalized_url(value: str) -> str:
 
 
 def normalize_company_rows(rows: list[dict]) -> list[dict]:
-    clean = []
+    """Validate company rows and preserve explicitly configured ATS domains."""
+    clean_rows = []
     seen = set()
     for row in rows:
         name = str(row.get("name", row.get("company", ""))).strip()
         url = normalized_url(str(row.get("career_url", row.get("careers_url", row.get("url", "")))))
         parsed = urlparse(url)
-        if name and parsed.scheme in ("http", "https") and parsed.hostname and "." in parsed.hostname:
-            key = url.lower()
-            if key not in seen:
-                seen.add(key)
-                host = parsed.hostname.lower().removeprefix("www.")
-                clean.append({"name": name, "career_url": url, "allowed_domains": [host]})
-    return clean
+        if not name or name.upper() == "ADD COMPANY NAME" or "example.com" in url.lower():
+            continue
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or "." not in parsed.hostname:
+            continue
+        key = url.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        domains = [parsed.hostname.lower().removeprefix("www.")]
+        supplied = row.get("allowed_domains", []) or []
+        if isinstance(supplied, str):
+            supplied = re.split(r"[,;\s]+", supplied)
+        if not isinstance(supplied, (list, tuple, set)):
+            supplied = []
+        for domain in supplied:
+            domain = str(domain).strip().lower().removeprefix("www.").strip("/")
+            # Accept hostname entries only, not arbitrary URL paths or schemes.
+            domain = urlparse("https://" + domain).hostname or ""
+            if domain and "." in domain and domain not in domains:
+                domains.append(domain)
+        clean_rows.append({"name": name, "career_url": url, "allowed_domains": domains})
+    return clean_rows
 
 
 def save_companies(companies: list[dict]) -> None:
@@ -237,9 +253,18 @@ with left:
                 new_name = st.text_input("Company name", placeholder="e.g. Microsoft")
             with c2:
                 new_url = st.text_input("Careers page URL", placeholder="https://careers.company.com/")
+            extra_domains = st.text_input(
+                "Additional allowed domains (optional)",
+                placeholder="boards.greenhouse.io, jobs.lever.co",
+                help="Only add trusted ATS hosts that this company's career page links to. The career-page domain is included automatically.",
+            )
             add_clicked = st.form_submit_button("＋ Add company", type="primary")
         if add_clicked:
-            row = {"name": new_name.strip(), "career_url": normalized_url(new_url)}
+            row = {
+                "name": new_name.strip(),
+                "career_url": normalized_url(new_url),
+                "allowed_domains": [x.strip() for x in re.split(r"[,;\s]+", extra_domains) if x.strip()],
+            }
             merged = normalize_company_rows(st.session_state.companies + [row])
             if not new_name.strip():
                 st.error("Enter a company name.")
@@ -282,6 +307,10 @@ with left:
                     with r1:
                         st.markdown(f"**{company['name']}**")
                         st.markdown(f'<div class="company-url">{company["career_url"]}</div>', unsafe_allow_html=True)
+                        base_host = (urlparse(company["career_url"]).hostname or "").lower().removeprefix("www.")
+                        extra_hosts = [d for d in company.get("allowed_domains", []) if d != base_host]
+                        if extra_hosts:
+                            st.caption("ATS domains: " + ", ".join(extra_hosts))
                     with r2:
                         st.markdown(f'<span class="status">{status}</span>', unsafe_allow_html=True)
                     with r3:
@@ -330,14 +359,55 @@ with right:
                 st.dataframe(chart, use_container_width=True, hide_index=True, height=250)
 
 st.markdown("")
-with st.expander("Recent job postings", expanded=False):
+with st.expander("Job postings and export", expanded=True):
     if data.empty:
-        st.info("No results to show.")
+        st.info("No results to show. Add a company and run a scan.")
     else:
-        display_cols = [c for c in ["job_title", "company", "location_mention", "employment_type_mention", "source_url"] if c in data.columns]
-        st.dataframe(data[display_cols].head(50), use_container_width=True, hide_index=True)
-        st.download_button("Export job postings CSV", data.to_csv(index=False).encode("utf-8-sig"),
-                           file_name="role_radar_jobs.csv", mime="text/csv")
+        view = data.copy()
+        if "job_status" not in view.columns:
+            view["job_status"] = "Needs verification"
+        view["job_status"] = view["job_status"].astype(str).replace("", "Needs verification")
+        other_statuses = sorted(x for x in view["job_status"].unique().tolist() if x not in {"Likely open", "Needs verification"})
+        status_values = ["Potentially open", "All statuses", "Likely open", "Needs verification"] + other_statuses
+        chosen_status = st.selectbox("Job status", status_values, index=0, key="job_status_filter")
+        search_query = st.text_input("Search title, company, or location", key="job_search")
+        if chosen_status == "Potentially open":
+            view = view[view["job_status"].isin(["Likely open", "Needs verification"])]
+        elif chosen_status != "All statuses":
+            view = view[view["job_status"].astype(str) == chosen_status]
+        if search_query.strip():
+            q = search_query.strip().lower()
+            searchable_cols = [c for c in ["job_title", "company", "location_mention", "description"] if c in view.columns]
+            match = pd.Series(False, index=view.index)
+            for col in searchable_cols:
+                match = match | view[col].astype(str).str.lower().str.contains(q, regex=False, na=False)
+            view = view[match]
+        display_cols = [c for c in [
+            "job_title", "company", "job_status", "date_posted", "valid_through",
+            "location_mention", "employment_type_mention", "work_arrangement_mention",
+            "last_seen_utc", "source_url"
+        ] if c in view.columns]
+        st.caption(f"Showing {len(view):,} of {len(data):,} stored job records. 'Likely open' is a heuristic; verify on the employer's site.")
+        if "source_url" in display_cols:
+            st.dataframe(
+                view[display_cols],
+                use_container_width=True,
+                hide_index=True,
+                height=420,
+                column_config={
+                    "source_url": st.column_config.LinkColumn("Job posting", display_text="Open posting"),
+                    "job_status": st.column_config.TextColumn("Status"),
+                },
+            )
+        else:
+            st.dataframe(view[display_cols], use_container_width=True, hide_index=True, height=420)
+        st.download_button(
+            "Export filtered postings CSV",
+            data=view.to_csv(index=False).encode("utf-8-sig"),
+            file_name="role_radar_jobs.csv",
+            mime="text/csv",
+        )
+
 
 if db_error:
     st.warning("Could not load results from the database. Check DATABASE_URL and the job_postings table.")
@@ -433,5 +503,12 @@ if pending:
             log_view.code("\n".join(log_lines[-100:]), language="text")
             st.session_state.scan_log = log_lines[-500:]
     except Exception as exc:
+        # Restore the complete company list even if the subprocess could not start.
+        try:
+            cfg = load_config()
+            cfg["companies"] = normalize_company_rows(st.session_state.companies)
+            save_config(cfg)
+        except Exception:
+            pass
         st.session_state.scan_status = "Failed to start"
         st.error(f"Could not start agent.py: {exc}")
