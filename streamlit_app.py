@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import create_engine, text as sql_text
+from sqlalchemy import create_engine, inspect as sqlalchemy_inspect, text as sql_text
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "config.json"
@@ -207,6 +207,57 @@ def load_results() -> tuple[pd.DataFrame, str | None]:
     return pd.DataFrame(), None
 
 
+def clear_saved_job_data() -> tuple[int, int]:
+    """Delete saved job rows and local crawler exports, preserving company settings."""
+    cfg = load_config()
+    configured_exports = [
+        CSV,
+        ROOT / "job_requirements.xlsx",
+        Path(str(cfg.get("export_csv", "job_requirements.csv"))),
+        Path(str(cfg.get("export_excel", "job_requirements.xlsx"))),
+    ]
+    safe_exports: set[Path] = set()
+    for path in configured_exports:
+        candidate = path if path.is_absolute() else ROOT / path
+        resolved = candidate.resolve()
+        # Never delete files outside this application's folder.
+        if resolved != ROOT and ROOT in resolved.parents:
+            safe_exports.add(resolved)
+
+    database_rows_deleted = 0
+    url = db_url()
+    if url:
+        engine = create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
+        try:
+            with engine.begin() as conn:
+                if sqlalchemy_inspect(conn).has_table("job_postings"):
+                    database_rows_deleted = int(
+                        conn.execute(sql_text("SELECT COUNT(*) FROM job_postings")).scalar_one()
+                    )
+                    conn.execute(sql_text("DELETE FROM job_postings"))
+                # Remove a stale crawler staging table if a previous scan was interrupted.
+                conn.execute(sql_text("DROP TABLE IF EXISTS job_postings_scan_stage"))
+        except Exception as exc:
+            raise RuntimeError(
+                "The database could not be cleared, so local exports were left untouched. "
+                f"Database error: {type(exc).__name__}: {exc}"
+            ) from exc
+        finally:
+            engine.dispose()
+
+    files_deleted = 0
+    for path in safe_exports:
+        try:
+            if path.is_file():
+                path.unlink()
+                files_deleted += 1
+        except OSError as exc:
+            raise RuntimeError(
+                f"Database rows were cleared, but could not delete local export {path.name}: {exc}"
+            ) from exc
+    return database_rows_deleted, files_deleted
+
+
 def card(icon: str, value: str, label: str, note: str) -> None:
     st.markdown(
         f'<div class="metric-card"><div class="metric-row"><div class="metric-icon">{icon}</div>'
@@ -266,6 +317,9 @@ st.markdown(
 )
 
 data, db_error = load_results()
+cleanup_notice = st.session_state.pop("cleanup_notice", None)
+if cleanup_notice:
+    st.success(cleanup_notice)
 company_count = len(st.session_state.companies)
 job_count = len(data)
 role_count = 0
@@ -456,6 +510,30 @@ with st.expander("Job postings and export", expanded=True):
             file_name="role_radar_jobs.csv",
             mime="text/csv",
         )
+
+
+with st.expander("Data cleanup · Clear previous job results", expanded=False):
+    st.markdown("**Start with a clean results list**")
+    st.warning(
+        "This permanently deletes all saved job-posting rows and local crawler CSV/XLSX exports. "
+        "Your configured companies and crawler settings will be kept."
+    )
+    with st.form("clear_job_data_form", clear_on_submit=True):
+        confirm_clear = st.checkbox("I understand this will delete all previous job results.")
+        submit_clear = st.form_submit_button("Delete all previous job data", type="primary")
+    if submit_clear:
+        if not confirm_clear:
+            st.error("Check the confirmation box before deleting previous job data.")
+        else:
+            try:
+                rows_deleted, files_deleted = clear_saved_job_data()
+                st.session_state["cleanup_notice"] = (
+                    f"Previous job data cleared. Database rows deleted: {rows_deleted:,}. "
+                    f"Local export files deleted: {files_deleted:,}. Company settings were preserved."
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not fully clear previous data: {exc}")
 
 
 if db_error:
