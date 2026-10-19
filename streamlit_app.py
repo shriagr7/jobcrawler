@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -19,65 +20,62 @@ CSV = ROOT / "job_requirements.csv"
 AGENT = ROOT / "agent.py"
 
 st.set_page_config(
-    page_title="RoleRadar | Hiring Intelligence",
+    page_title="RoleRadar",
     page_icon="🎯",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
-# ---------- UI styling ----------
 st.markdown(r"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
-:root{--ink:#111d46;--muted:#64748b;--line:#e5eaf5;--blue:#4057ff;--purple:#7847ff;}
+:root{--ink:#111d46;--muted:#66748e;--line:#e4eaf5;--blue:#4057ff;--purple:#7650ff}
 html,body,[class*="css"]{font-family:'DM Sans',sans-serif}
-.stApp{background:linear-gradient(120deg,#f6f9ff 0%,#fbfcff 55%,#f4f7ff 100%)}
-[data-testid="stHeader"]{background:rgba(248,250,255,.88)}
-.block-container{max-width:1600px;padding-top:1rem;padding-bottom:2.5rem}
-[data-testid="stSidebar"]{background:linear-gradient(180deg,#101a39 0%,#101b3b 60%,#13254d 100%);border-right:1px solid #26365d}
-[data-testid="stSidebar"] *{color:#f1f5ff}
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p{color:#bdc9e6}
-.brand{display:flex;align-items:center;gap:12px;padding:.45rem 0 1.3rem}
-.brand-icon{width:48px;height:48px;border-radius:16px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#24d0df,#654cff);font-size:26px;box-shadow:0 8px 25px #0003}
-.brand-name{font:800 1.55rem Manrope,sans-serif;letter-spacing:-.06em;color:#fff}
-.brand-sub{font-size:.68rem;color:#b9c7e7;letter-spacing:.13em;text-transform:uppercase}
-.sidebar-note{margin-top:2rem;padding:1rem;border:1px solid #ffffff20;border-radius:14px;background:#ffffff08;color:#c5d2ee;font-size:.82rem;line-height:1.5}
-.page-head{display:flex;justify-content:space-between;align-items:center;gap:1rem;margin:.15rem 0 1rem}
-.logo-title{font:800 clamp(2rem,3vw,3rem) Manrope,sans-serif;letter-spacing:-.065em;line-height:1;color:#111d46}
-.logo-title span{color:#4057ff}
-.tagline{font-size:.93rem;color:#64748b;margin-top:.45rem}
-.live-pill{padding:.85rem 1rem;border:1px solid #dce4ff;background:linear-gradient(120deg,#edf1ff,#f7f8ff);border-radius:15px;color:#192c66;max-width:290px;font-weight:600}
-.section-title{font:800 1.12rem Manrope,sans-serif;color:#111d46;letter-spacing:-.03em;margin:.1rem 0 .18rem}
-.section-subtitle{font-size:.84rem;color:#71809a;margin-bottom:.85rem}
-.metric-card{background:#fff;border:1px solid #e4eaf5;border-radius:16px;padding:1rem 1.05rem;min-height:112px;box-shadow:0 5px 20px #1e3a8a05}
-.metric-top{display:flex;align-items:center;gap:12px}
-.metric-icon{height:48px;width:48px;display:flex;align-items:center;justify-content:center;border-radius:13px;background:#edf2ff;font-size:23px}
-.metric-value{font:800 1.85rem Manrope,sans-serif;color:#101b49;line-height:1.1}
+.stApp{background:linear-gradient(120deg,#f6f9ff,#fff 55%,#f5f7ff)}
+.block-container{max-width:1450px;padding-top:1.2rem;padding-bottom:2rem}
+[data-testid="stHeader"]{background:transparent}
+.brand{display:flex;align-items:center;gap:13px;margin:.2rem 0 1.25rem}
+.brand-icon{width:55px;height:55px;display:flex;align-items:center;justify-content:center;border-radius:17px;background:linear-gradient(135deg,#20cde0,#584cff);color:white;font-size:29px;box-shadow:0 8px 24px #4057ff30}
+.brand-name{font:800 2.2rem Manrope,sans-serif;letter-spacing:-.065em;color:#111d46;line-height:1.05}
+.brand-name span{color:#4057ff}
+.brand-sub{font-size:.9rem;color:#687793;margin-top:.3rem}
+.header-pill{border:1px solid #dce4ff;border-radius:15px;padding:.85rem 1rem;background:#eef2ff;color:#1b2b65;font-weight:600}
+.metric-card{background:white;border:1px solid #e4eaf5;border-radius:15px;padding:1rem;min-height:105px;box-shadow:0 5px 18px #1e3a8a06}
+.metric-row{display:flex;align-items:center;gap:12px}
+.metric-icon{height:46px;width:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:#edf2ff;font-size:23px}
+.metric-value{font:800 1.8rem Manrope,sans-serif;color:#101b49;line-height:1.15}
 .metric-label{font-weight:600;color:#18264d;font-size:.88rem}
-.metric-note{font-size:.73rem;color:#77849c;margin-top:.18rem}
-.panel{background:#fff;border:1px solid #e3e9f4;border-radius:16px;padding:1rem 1.05rem;box-shadow:0 5px 20px #1e3a8a05;height:100%}
-.panel-head{display:flex;align-items:center;gap:10px;margin-bottom:.15rem}
-.panel-icon{height:42px;width:42px;display:flex;align-items:center;justify-content:center;background:#eef3ff;border-radius:12px;font-size:22px}
-.panel-title{font:800 1.08rem Manrope,sans-serif;color:#101b49}
-div.stButton>button,div.stFormSubmitButton>button{border-radius:10px;font-weight:700;min-height:2.55rem;border-color:#d9e1f5}
+.metric-note{font-size:.73rem;color:#77849c;margin-top:.15rem}
+.panel-title{font:800 1.12rem Manrope,sans-serif;color:#101b49}
+.panel-sub{font-size:.82rem;color:#71809a;margin:.15rem 0 .9rem}
+.panel-icon{display:inline-flex;width:38px;height:38px;align-items:center;justify-content:center;border-radius:11px;background:#eef3ff;margin-right:9px;font-size:20px;vertical-align:middle}
+.company-card{background:#fff;border:1px solid #e4eaf5;border-radius:14px;padding:.8rem 1rem;margin:.45rem 0}
+.company-name{font-weight:700;color:#17244c}
+.company-url{font-size:.78rem;color:#71809a;overflow-wrap:anywhere}
+.status{display:inline-block;border-radius:999px;padding:.2rem .55rem;background:#eef2ff;color:#4057ff;font-size:.72rem;font-weight:700}
+div.stButton>button,div.stFormSubmitButton>button{border-radius:10px;font-weight:700;min-height:2.5rem;border-color:#d9e1f5}
 div.stButton>button[kind="primary"],div.stFormSubmitButton>button[kind="primary"]{background:linear-gradient(100deg,#4057ff,#6849ff);border:0;color:#fff}
-[data-testid="stDataFrame"]{border:1px solid #e3e9f4;border-radius:10px;overflow:hidden}
-[data-testid="stMetric"]{background:#fff;border:1px solid #e3e9f4;border-radius:13px;padding:.8rem}
 div[data-testid="stProgress"]>div>div{background:linear-gradient(90deg,#4057ff,#8a5cff)}
-.small-muted{font-size:.78rem;color:#7b879d}
+[data-testid="stDataFrame"]{border:1px solid #e3e9f4;border-radius:10px;overflow:hidden}
+div[data-testid="stFileUploader"]{background:#f9faff;border:1px dashed #cbd5ee;border-radius:12px;padding:.4rem}
 hr{border-color:#e7ebf5}
-@media(max-width:900px){.live-pill{display:none}.logo-title{font-size:2rem}}
+.small-muted{font-size:.78rem;color:#7b879d}
+@media(max-width:750px){.brand-name{font-size:1.8rem}.header-pill{display:none}}
 </style>
 """, unsafe_allow_html=True)
 
 
-def database_url() -> str:
+def db_url() -> str:
     value = os.environ.get("DATABASE_URL", "").strip()
     if not value:
         try:
             value = str(st.secrets.get("DATABASE_URL", "")).strip()
         except Exception:
             value = ""
+    if value.startswith("postgres://"):
+        return "postgresql+psycopg://" + value[len("postgres://"):]
+    if value.startswith("postgresql://") and "+" not in value.split(":", 1)[0]:
+        return "postgresql+psycopg://" + value[len("postgresql://"):]
     return value
 
 
@@ -90,9 +88,9 @@ def load_config() -> dict:
         "exclude_url_keywords": ["privacy", "cookie", "benefit", "event", "login"],
     }
     try:
-        existing = json.loads(CONFIG.read_text(encoding="utf-8"))
-        if isinstance(existing, dict):
-            defaults.update(existing)
+        loaded = json.loads(CONFIG.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            defaults.update(loaded)
     except Exception:
         pass
     return defaults
@@ -102,369 +100,279 @@ def save_config(cfg: dict) -> None:
     CONFIG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
-def normalize_url(value: str) -> str:
+def normalized_url(value: str) -> str:
     value = value.strip()
     if value and not re.match(r"^https?://", value, re.I):
         value = "https://" + value
     return value.rstrip("/")
 
 
-def get_results() -> pd.DataFrame:
-    url = database_url()
+def normalize_company_rows(rows: list[dict]) -> list[dict]:
+    clean = []
+    seen = set()
+    for row in rows:
+        name = str(row.get("name", row.get("company", ""))).strip()
+        url = normalized_url(str(row.get("career_url", row.get("careers_url", row.get("url", "")))))
+        parsed = urlparse(url)
+        if name and parsed.scheme in ("http", "https") and parsed.hostname and "." in parsed.hostname:
+            key = url.lower()
+            if key not in seen:
+                seen.add(key)
+                host = parsed.hostname.lower().removeprefix("www.")
+                clean.append({"name": name, "career_url": url, "allowed_domains": [host]})
+    return clean
+
+
+def save_companies(companies: list[dict]) -> None:
+    cfg = load_config()
+    cfg["companies"] = normalize_company_rows(companies)
+    save_config(cfg)
+
+
+def load_results() -> tuple[pd.DataFrame, str | None]:
+    url = db_url()
     if url:
-        if url.startswith("postgres://"):
-            url = "postgresql+psycopg://" + url[len("postgres://"):]
-        elif url.startswith("postgresql://") and "+" not in url.split(":", 1)[0]:
-            url = "postgresql+psycopg://" + url[len("postgresql://"):]
+        engine = None
         try:
             engine = create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
-            try:
-                with engine.connect() as conn:
-                    df = pd.read_sql(sql_text("SELECT * FROM job_postings"), conn)
-                if not df.empty:
-                    return df.fillna("")
-            finally:
-                engine.dispose()
+            with engine.connect() as conn:
+                df = pd.read_sql(sql_text("SELECT * FROM job_postings"), conn)
+            return df.fillna(""), None
         except Exception as exc:
-            st.session_state["db_read_error"] = str(exc)
+            return pd.DataFrame(), str(exc)
+        finally:
+            if engine is not None:
+                engine.dispose()
     if CSV.exists():
         try:
-            return pd.read_csv(CSV).fillna("")
-        except Exception:
-            pass
-    return pd.DataFrame()
+            return pd.read_csv(CSV).fillna(""), None
+        except Exception as exc:
+            return pd.DataFrame(), str(exc)
+    return pd.DataFrame(), None
 
 
-def metric_card(icon: str, value: str, label: str, note: str) -> None:
+def card(icon: str, value: str, label: str, note: str) -> None:
     st.markdown(
-        f'<div class="metric-card"><div class="metric-top"><div class="metric-icon">{icon}</div>'
+        f'<div class="metric-card"><div class="metric-row"><div class="metric-icon">{icon}</div>'
         f'<div><div class="metric-value">{value}</div><div class="metric-label">{label}</div>'
         f'<div class="metric-note">{note}</div></div></div></div>',
         unsafe_allow_html=True,
     )
 
 
-def panel_heading(icon: str, title: str, subtitle: str) -> None:
-    st.markdown(
-        f'<div class="panel-head"><div class="panel-icon">{icon}</div>'
-        f'<div><div class="panel-title">{title}</div><div class="small-muted">{subtitle}</div></div></div>',
-        unsafe_allow_html=True,
-    )
-
-
-def save_companies(companies: list[dict]) -> None:
-    cfg = load_config()
-    cfg["companies"] = []
-    for company in companies:
-        host = (urlparse(company["career_url"]).hostname or "").lower().removeprefix("www.")
-        cfg["companies"].append({
-            "name": company["name"],
-            "career_url": company["career_url"],
-            "allowed_domains": [host] if host else [],
-        })
-    save_config(cfg)
-
-
-def queue_scan(mode: str, max_pages: int, delay: float) -> None:
-    companies = st.session_state.get("companies", [])
+def start_scan(companies: list[dict], mode: str) -> None:
     if not companies:
-        st.error("Add at least one company before running a scan.")
+        st.warning("Add at least one company first.")
         return
-    if not database_url():
-        st.error("DATABASE_URL is missing. Add it in Render → Environment.")
+    if not db_url():
+        st.error("DATABASE_URL is not configured in Render → Environment.")
         return
     if not AGENT.exists():
-        st.error("agent.py was not found beside streamlit_app.py.")
+        st.error("agent.py must be in the same GitHub repository folder as streamlit_app.py.")
         return
     cfg = load_config()
-    cfg["companies"] = []
-    for company in companies:
-        host = (urlparse(company["career_url"]).hostname or "").lower().removeprefix("www.")
-        cfg["companies"].append({
-            "name": company["name"],
-            "career_url": company["career_url"],
-            "allowed_domains": [host] if host else [],
-        })
-    cfg["max_pages_per_domain"] = int(max_pages)
-    cfg["request_delay_seconds"] = float(delay)
+    cfg["companies"] = normalize_company_rows(companies)
+    cfg["max_pages_per_domain"] = int(cfg.get("max_pages_per_domain", 80))
+    cfg["request_delay_seconds"] = float(cfg.get("request_delay_seconds", 2))
     save_config(cfg)
-    st.session_state.scan_mode = mode
-    st.session_state.scan_requested = True
-    st.session_state.last_scan_status = "Queued"
+    st.session_state["pending_scan"] = {"mode": mode, "companies": cfg["companies"]}
+    st.rerun()
 
 
-# ---------- Session state ----------
+# Persist configured companies in session and config.
 if "companies" not in st.session_state:
-    st.session_state.companies = [
-        {"name": c.get("name", ""), "career_url": c.get("career_url", "")}
-        for c in load_config().get("companies", [])
-        if c.get("name") and c.get("career_url") and "example.com" not in c.get("career_url", "")
-    ]
+    st.session_state.companies = normalize_company_rows(load_config().get("companies", []))
+if "pending_scan" not in st.session_state:
+    st.session_state.pending_scan = None
 if "scan_log" not in st.session_state:
     st.session_state.scan_log = []
-if "last_scan_status" not in st.session_state:
-    st.session_state.last_scan_status = "Not run yet"
-if "scan_requested" not in st.session_state:
-    st.session_state.scan_requested = False
+if "scan_status" not in st.session_state:
+    st.session_state.scan_status = "Ready"
+if "company_status" not in st.session_state:
+    st.session_state.company_status = {}
 
-# ---------- Sidebar ----------
-with st.sidebar:
-    st.markdown(
-        '<div class="brand"><div class="brand-icon">◎</div><div>'
-        '<div class="brand-name">RoleRadar</div><div class="brand-sub">Hiring intelligence</div></div></div>',
-        unsafe_allow_html=True,
-    )
-    page = st.radio(
-        "Workspace",
-        ["Dashboard", "Add Company", "Run Scan", "Scan Activity", "Job Roles"],
-        label_visibility="collapsed",
-    )
-    st.divider()
-    if database_url():
-        st.success("Neon PostgreSQL connected")
-    else:
-        st.warning("Database not configured")
-        st.caption("Set DATABASE_URL in Render → Environment.")
-    st.markdown(
-        '<div class="sidebar-note"><b>Discover job opportunities</b><br><br>'
-        'Collect job postings from company career pages and explore hiring demand by role.</div>',
-        unsafe_allow_html=True,
-    )
-
-# ---------- Page header ----------
+# Header
 st.markdown(
-    '<div class="page-head"><div><div class="logo-title">◎ <span>Role</span>Radar</div>'
-    '<div class="tagline">Scan. Extract. Analyze. Understand the Talent Demand.</div></div>'
-    '<div class="live-pill">🎯 &nbsp; Track hiring signals<br>from company career pages</div></div>',
+    '<div class="brand"><div class="brand-icon">◎</div><div>'
+    '<div class="brand-name"><span>Role</span>Radar</div>'
+    '<div class="brand-sub">A simple view of hiring activity across your target companies.</div></div>'
+    '<div style="flex:1"></div><div class="header-pill">🎯 &nbsp; Company hiring dashboard</div></div>',
     unsafe_allow_html=True,
 )
 
-data = get_results()
-company_count = data["company"].nunique() if not data.empty and "company" in data.columns else 0
+data, db_error = load_results()
+company_count = len(st.session_state.companies)
 job_count = len(data)
-roles_count = data["job_title"].astype(str).str.strip().replace("", pd.NA).nunique() if not data.empty and "job_title" in data.columns else 0
+role_count = 0
+if not data.empty and "job_title" in data.columns:
+    titles = data["job_title"].astype(str).str.strip()
+    role_count = titles[titles.ne("")].nunique()
 recent_count = 0
 if not data.empty and "date_posted" in data.columns:
-    posted = pd.to_datetime(data["date_posted"], errors="coerce", utc=True)
-    recent_count = int((posted >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=30)).sum())
+    dates = pd.to_datetime(data["date_posted"], errors="coerce", utc=True)
+    recent_count = int((dates >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=30)).sum())
 
-# ---------- Dashboard ----------
-if page == "Dashboard":
-    m1, m2, m3, m4 = st.columns(4, gap="medium")
-    with m1:
-        metric_card("▦", f"{len(st.session_state.companies):,}", "Companies", "Configured for scan")
-    with m2:
-        metric_card("▤", f"{job_count:,}", "Total Job Postings", "Extracted till now")
-    with m3:
-        metric_card("♟", f"{roles_count:,}", "Unique Job Roles", "Identified")
-    with m4:
-        metric_card("▦", f"{recent_count:,}", "Jobs (Past 30 Days)", "Based on published date")
+# Simple dashboard: four numbers, company list and per-company scan buttons, and roles.
+metrics = st.columns(4, gap="medium")
+with metrics[0]:
+    card("▦", f"{company_count:,}", "Companies", "Configured")
+with metrics[1]:
+    card("▤", f"{job_count:,}", "Job Postings", "Saved in results")
+with metrics[2]:
+    card("♟", f"{role_count:,}", "Unique Job Roles", "Distinct titles")
+with metrics[3]:
+    card("▦", f"{recent_count:,}", "Past 30 Days", "Based on posted date")
 
-    left, right = st.columns([1.05, 1.1], gap="medium")
-    with left:
-        with st.container(border=True):
-            panel_heading("▦", "Add Company", "Enter the company name and its official careers page URL")
-            with st.form("quick_add_company", clear_on_submit=True):
-                c1, c2 = st.columns([.8, 1.2])
-                with c1:
-                    name = st.text_input("Company Name", placeholder="e.g. Google")
-                with c2:
-                    career_url = st.text_input("Careers Page URL", placeholder="https://company.com/careers")
-                submitted = st.form_submit_button("＋ Add Company", type="primary", use_container_width=False)
-            if submitted:
-                candidate = normalize_url(career_url)
-                parsed = urlparse(candidate)
-                if not name.strip():
-                    st.error("Enter a company name.")
-                elif parsed.scheme not in ("http", "https") or not parsed.hostname or "." not in parsed.hostname:
-                    st.error("Enter a valid careers URL.")
-                elif any(c["career_url"].rstrip("/") == candidate.rstrip("/") for c in st.session_state.companies):
-                    st.warning("That careers URL is already configured.")
-                else:
-                    st.session_state.companies.append({"name": name.strip(), "career_url": candidate})
-                    save_companies(st.session_state.companies)
-                    st.success(f"{name.strip()} added.")
-                    st.rerun()
+st.markdown("")
 
-            st.markdown(f"**Configured Companies ({len(st.session_state.companies)})**")
-            if st.session_state.companies:
-                display = pd.DataFrame([
-                    {"#": i + 1, "Company Name": c["name"], "Careers URL": c["career_url"]}
-                    for i, c in enumerate(st.session_state.companies[:6])
-                ])
-                st.dataframe(display, use_container_width=True, hide_index=True, height=225,
-                             column_config={"Careers URL": st.column_config.LinkColumn("Careers URL")})
-                if len(st.session_state.companies) > 6:
-                    st.caption(f"Showing 6 of {len(st.session_state.companies)} configured companies. Manage the full list under Add Company.")
-            else:
-                st.info("Add your first company to start collecting job postings.")
-
-    with right:
-        with st.container(border=True):
-            panel_heading("▶", "Run Job Scan", "Start scanning the configured company career pages")
-            cfg = load_config()
-            max_pages = st.slider("Maximum pages per company", 10, 300, int(cfg.get("max_pages_per_domain", 80)), 10, key="dash_max_pages")
-            delay = st.slider("Delay between requests (seconds)", 1.0, 10.0, float(cfg.get("request_delay_seconds", 2.0)), .5, key="dash_delay")
-            b1, b2 = st.columns(2)
-            with b1:
-                if st.button("▶  Run Full Scan", type="primary", use_container_width=True):
-                    queue_scan("all", max_pages, delay)
-                    st.rerun()
-            with b2:
-                if st.button("▦  Scan — Past 30 Days", use_container_width=True):
-                    queue_scan("30_days", max_pages, delay)
-                    st.rerun()
-            st.markdown("---")
-            st.markdown(f"**Latest scan status:** `{st.session_state.last_scan_status}`")
-            if st.session_state.scan_log:
-                st.code("\n".join(st.session_state.scan_log[-8:]), language="text")
-            else:
-                st.caption("Scan output and progress will appear here while a scan runs.")
-
-    st.markdown("---")
+left, right = st.columns([1.15, 1], gap="medium")
+with left:
     with st.container(border=True):
-        panel_heading("▥", "Job Roles Dashboard", "Job postings grouped by role title (based on extracted data)")
-        if data.empty or "job_title" not in data.columns:
-            st.info("No job records are available yet. Run a scan; if it returns zero jobs, review Scan Activity for crawler messages.")
-        else:
-            chart_col, table_col = st.columns([1.5, 1], gap="medium")
-            roles = data["job_title"].astype(str).str.strip()
-            roles = roles[roles.ne("")]
-            counts = roles.value_counts().head(10)
-            if counts.empty:
-                st.info("The crawler has saved records, but no job titles were detected.")
-            else:
-                with chart_col:
-                    chart_df = counts.rename_axis("Job Role").reset_index(name="Number of Postings")
-                    st.bar_chart(chart_df.set_index("Job Role"), horizontal=False, height=300, use_container_width=True)
-                with table_col:
-                    st.markdown("**Job Roles (Top 10)**")
-                    role_table = counts.rename_axis("Job Role").reset_index(name="Number of Postings")
-                    role_table.insert(0, "#", range(1, len(role_table) + 1))
-                    st.dataframe(role_table, use_container_width=True, hide_index=True, height=330)
+        st.markdown('<div class="panel-title"><span class="panel-icon">＋</span>Companies</div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel-sub">Add one company or upload a CSV/XLSX list.</div>', unsafe_allow_html=True)
 
-    if not data.empty:
-        with st.expander("Latest extracted job postings"):
-            cols = [c for c in ["job_title", "company", "location_mention", "employment_type_mention", "source_url"] if c in data.columns]
-            st.dataframe(data[cols].head(25), use_container_width=True, hide_index=True)
-        with st.expander("Export results"):
-            st.download_button("Download job records as CSV", data.to_csv(index=False).encode("utf-8-sig"),
-                               file_name="role_radar_jobs.csv", mime="text/csv")
-
-# ---------- Add Company ----------
-elif page == "Add Company":
-    with st.container(border=True):
-        panel_heading("＋", "Add Company", "Use the official careers or job listings page.")
-        with st.form("add_company_page", clear_on_submit=True):
-            name = st.text_input("Company name", placeholder="e.g. Microsoft")
-            career_url = st.text_input("Official careers page URL", placeholder="https://careers.company.com/")
-            submitted = st.form_submit_button("＋ Add Company", type="primary")
-        if submitted:
-            candidate = normalize_url(career_url)
-            parsed = urlparse(candidate)
-            if not name.strip():
+        with st.form("add_company_form", clear_on_submit=True):
+            c1, c2 = st.columns([.75, 1.25])
+            with c1:
+                new_name = st.text_input("Company name", placeholder="e.g. Microsoft")
+            with c2:
+                new_url = st.text_input("Careers page URL", placeholder="https://careers.company.com/")
+            add_clicked = st.form_submit_button("＋ Add company", type="primary")
+        if add_clicked:
+            row = {"name": new_name.strip(), "career_url": normalized_url(new_url)}
+            merged = normalize_company_rows(st.session_state.companies + [row])
+            if not new_name.strip():
                 st.error("Enter a company name.")
-            elif parsed.scheme not in ("http", "https") or not parsed.hostname or "." not in parsed.hostname:
-                st.error("Enter a valid URL beginning with https://.")
-            elif any(c["career_url"].rstrip("/") == candidate.rstrip("/") for c in st.session_state.companies):
-                st.warning("That URL is already in your company list.")
+            elif not row["career_url"]:
+                st.error("Enter the careers page URL.")
+            elif len(merged) == len(st.session_state.companies):
+                st.warning("That URL is already configured or is invalid.")
             else:
-                st.session_state.companies.append({"name": name.strip(), "career_url": candidate})
-                save_companies(st.session_state.companies)
-                st.success("Company saved to config.json.")
+                st.session_state.companies = merged
+                save_companies(merged)
+                st.success(f"{new_name.strip()} added.")
                 st.rerun()
 
-    st.markdown("### Configured Companies")
-    if st.session_state.companies:
-        for i, company in enumerate(list(st.session_state.companies)):
-            with st.container(border=True):
-                c1, c2, c3 = st.columns([1, 2.3, .6])
-                c1.write(f"**{company['name']}**")
-                c2.markdown(f"[{company['career_url']}]({company['career_url']})")
-                if c3.button("Remove", key=f"remove_{i}"):
-                    st.session_state.companies.pop(i)
-                    save_companies(st.session_state.companies)
+        uploaded = st.file_uploader("Upload company list (CSV or Excel)", type=["csv", "xlsx"], key="company_upload")
+        if uploaded is not None:
+            try:
+                if uploaded.name.lower().endswith(".csv"):
+                    uploaded_df = pd.read_csv(uploaded)
+                else:
+                    uploaded_df = pd.read_excel(uploaded)
+                uploaded_rows = uploaded_df.rename(columns={c: str(c).strip().lower() for c in uploaded_df.columns}).to_dict("records")
+                new_rows = normalize_company_rows(uploaded_rows)
+                if st.button("Import company list", type="primary", key="import_companies"):
+                    merged = normalize_company_rows(st.session_state.companies + new_rows)
+                    added = max(0, len(merged) - len(st.session_state.companies))
+                    st.session_state.companies = merged
+                    save_companies(merged)
+                    st.success(f"Imported {added} new companies.")
                     st.rerun()
-    else:
-        st.info("No companies configured yet.")
+                st.caption(f"{len(new_rows)} valid company rows detected. Expected columns: `name` and `career_url` (or `company` and `url`).")
+            except Exception as exc:
+                st.error(f"Could not read this file: {exc}")
 
-# ---------- Run Scan ----------
-elif page == "Run Scan":
-    with st.container(border=True):
-        panel_heading("▶", "Run Job Scan", "Choose the crawl size and launch a scan.")
-        cfg = load_config()
-        max_pages = st.slider("Maximum pages per company", 10, 300, int(cfg.get("max_pages_per_domain", 80)), 10, key="scan_max_pages")
-        delay = st.slider("Delay between requests (seconds)", 1.0, 10.0, float(cfg.get("request_delay_seconds", 2.0)), .5, key="scan_delay")
-        st.caption("The crawler checks robots.txt and stays within each configured domain. Some JavaScript-driven career sites may need a site-specific parser.")
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("▶ Run Full Scan", type="primary", use_container_width=True):
-                queue_scan("all", max_pages, delay)
-                st.rerun()
-        with c2:
-            if st.button("▦ Scan — Past 30 Days", use_container_width=True):
-                queue_scan("30_days", max_pages, delay)
-                st.rerun()
-        if not st.session_state.companies:
-            st.warning("Add at least one company before scanning.")
-        if not database_url():
-            st.warning("DATABASE_URL is not configured in Render → Environment.")
-
-# ---------- Scan Activity ----------
-elif page == "Scan Activity":
-    with st.container(border=True):
-        panel_heading("◷", "Scan Activity", "Latest run status and crawler output.")
-        st.metric("Last scan status", st.session_state.last_scan_status)
-        if st.session_state.scan_log:
-            st.code("\n".join(st.session_state.scan_log[-150:]), language="text")
-            st.download_button("Download scan log", "\n".join(st.session_state.scan_log),
-                               file_name="role_radar_scan_log.txt", mime="text/plain")
+        st.markdown(f"**Configured companies · {len(st.session_state.companies)}**")
+        if st.session_state.companies:
+            for i, company in enumerate(st.session_state.companies):
+                status = st.session_state.company_status.get(company["name"], "Ready")
+                with st.container(border=True):
+                    r1, r2, r3 = st.columns([2.3, 1, .8], vertical_alignment="center")
+                    with r1:
+                        st.markdown(f"**{company['name']}**")
+                        st.markdown(f'<div class="company-url">{company["career_url"]}</div>', unsafe_allow_html=True)
+                    with r2:
+                        st.markdown(f'<span class="status">{status}</span>', unsafe_allow_html=True)
+                    with r3:
+                        if st.button("Scan", key=f"scan_company_{i}", type="primary", use_container_width=True):
+                            start_scan([company], "company")
+                    x1, x2 = st.columns([1, 5])
+                    with x1:
+                        if st.button("Remove", key=f"remove_company_{i}", use_container_width=True):
+                            st.session_state.companies.pop(i)
+                            save_companies(st.session_state.companies)
+                            st.rerun()
         else:
-            st.info("No scan logs recorded in this app session yet.")
-        if st.session_state.get("db_read_error"):
-            st.error("Could not read the job_postings table from Neon PostgreSQL.")
-            st.code(st.session_state.db_read_error)
+            st.info("No companies added yet.")
 
-# ---------- Job Roles ----------
-elif page == "Job Roles":
+        if st.session_state.companies:
+            st.markdown("---")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("▶ Scan all companies", type="primary", use_container_width=True):
+                    start_scan(st.session_state.companies, "all")
+            with c2:
+                if st.button("Scan all · Past 30 days", use_container_width=True):
+                    start_scan(st.session_state.companies, "30_days")
+
+with right:
     with st.container(border=True):
-        panel_heading("▥", "Job Roles", "Explore extracted postings by title.")
+        st.markdown('<div class="panel-title"><span class="panel-icon">▥</span>Job roles</div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel-sub">Most frequently detected job titles.</div>', unsafe_allow_html=True)
         if data.empty or "job_title" not in data.columns:
-            st.info("No job roles found yet. Run a scan and check the scan log if no records are saved.")
+            st.info("No saved job results yet. Scan a company to populate this dashboard.")
         else:
-            roles = data.copy()
-            roles["job_title"] = roles["job_title"].astype(str).str.strip()
-            roles = roles[roles["job_title"].ne("")]
-            if "company" in roles.columns:
-                company_options = ["All companies"] + sorted(roles["company"].dropna().astype(str).unique().tolist())
-                chosen_company = st.selectbox("Filter by company", company_options)
-                if chosen_company != "All companies":
-                    roles = roles[roles["company"] == chosen_company]
-            query = st.text_input("Search job titles", placeholder="e.g. Data Scientist")
-            if query:
-                roles = roles[roles["job_title"].str.contains(query, case=False, na=False)]
-            counts = roles["job_title"].value_counts().rename_axis("Job Role").reset_index(name="Number of Postings")
-            st.dataframe(counts, use_container_width=True, hide_index=True)
-            st.download_button("Download role summary", counts.to_csv(index=False).encode("utf-8-sig"),
-                               file_name="role_radar_role_summary.csv", mime="text/csv")
+            titles = data["job_title"].astype(str).str.strip()
+            titles = titles[titles.ne("")]
+            if "company" in data.columns:
+                companies = ["All companies"] + sorted(data["company"].astype(str).replace("", pd.NA).dropna().unique().tolist())
+                selected = st.selectbox("Company filter", companies, key="role_company_filter")
+                if selected != "All companies":
+                    titles = data.loc[data["company"].astype(str) == selected, "job_title"].astype(str).str.strip()
+                    titles = titles[titles.ne("")]
+            counts = titles.value_counts().head(10)
+            if counts.empty:
+                st.info("Job titles have not been extracted yet.")
+            else:
+                chart = counts.rename_axis("Job Role").reset_index(name="Postings")
+                st.bar_chart(chart.set_index("Job Role"), height=290, use_container_width=True)
+                st.dataframe(chart, use_container_width=True, hide_index=True, height=250)
 
-# ---------- Execute queued scan ----------
-if st.session_state.get("scan_requested"):
-    st.session_state.scan_requested = False
-    mode = st.session_state.get("scan_mode", "all")
+st.markdown("")
+with st.expander("Recent job postings", expanded=False):
+    if data.empty:
+        st.info("No results to show.")
+    else:
+        display_cols = [c for c in ["job_title", "company", "location_mention", "employment_type_mention", "source_url"] if c in data.columns]
+        st.dataframe(data[display_cols].head(50), use_container_width=True, hide_index=True)
+        st.download_button("Export job postings CSV", data.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="role_radar_jobs.csv", mime="text/csv")
+
+if db_error:
+    st.warning("Could not load results from the database. Check DATABASE_URL and the job_postings table.")
+    with st.expander("Database details"):
+        st.code(db_error)
+
+# Run queued scan, showing progress and logs on the same dashboard.
+pending = st.session_state.get("pending_scan")
+if pending:
+    st.session_state.pending_scan = None
     st.markdown("---")
-    st.markdown('<div class="section-title">Scanning in progress…</div><div class="section-subtitle">Keep this page open while the crawler runs.</div>', unsafe_allow_html=True)
-    progress = st.progress(0, text="Starting crawler…")
-    status = st.empty()
-    log_box = st.empty()
-    lines: list[str] = []
+    st.markdown("### Scan progress")
+    progress = st.progress(0, text="Starting scan…")
+    status_text = st.empty()
+    log_view = st.empty()
+    log_lines: list[str] = []
+    companies_to_scan = pending["companies"]
+    mode = pending["mode"]
+    started = time.time()
+    failed = False
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    if db_url():
+        env["DATABASE_URL"] = db_url()
+    if mode == "30_days":
+        env["SCAN_POSTED_WITHIN_DAYS"] = "30"
+    else:
+        env.pop("SCAN_POSTED_WITHIN_DAYS", None)
+
     try:
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        if database_url():
-            env["DATABASE_URL"] = database_url()
-        if mode == "30_days":
-            env["SCAN_POSTED_WITHIN_DAYS"] = "30"
+        # agent.py reads config.json, so temporarily restrict it to the selected company list.
+        cfg = load_config()
+        original_companies = cfg.get("companies", [])
+        cfg["companies"] = normalize_company_rows(companies_to_scan)
+        save_config(cfg)
         proc = subprocess.Popen(
             [sys.executable, "-u", str(AGENT)],
             cwd=str(ROOT),
@@ -474,42 +382,56 @@ if st.session_state.get("scan_requested"):
             text=True,
             bufsize=1,
         )
-        start = time.time()
-        while True:
-            line = proc.stdout.readline() if proc.stdout else ""
-            if line:
-                line = line.rstrip()
-                lines.append(line)
-                st.session_state.scan_log = lines[-500:]
-                match = re.search(r"Visited\s+(\d+)/(\d+)", line)
-                if match:
-                    visited, limit = int(match.group(1)), max(1, int(match.group(2)))
-                    pct = min(94, max(5, int(visited / limit * 90)))
-                    progress.progress(pct, text=f"Scanning career pages · {visited}/{limit} pages for current company")
-                    status.caption(f"Elapsed: {int(time.time() - start)} seconds")
+        try:
+            while True:
+                line = proc.stdout.readline() if proc.stdout else ""
+                if line:
+                    line = line.rstrip()
+                    log_lines.append(line)
+                    st.session_state.scan_log = log_lines[-500:]
+                    m = re.search(r"Visited\s+(\d+)/(\d+)", line)
+                    if m:
+                        visited, total = int(m.group(1)), max(1, int(m.group(2)))
+                        progress.progress(min(95, max(5, int(visited / total * 90))),
+                                          text=f"Scanning pages · {visited}/{total}")
+                    else:
+                        progress.progress(min(90, max(5, int((time.time() - started) / 20 * 5))),
+                                          text="Scanning company career pages…")
+                    status_text.caption(f"Elapsed {int(time.time() - started)}s · {len(log_lines)} log lines")
+                    log_view.code("\n".join(log_lines[-20:]), language="text")
+                elif proc.poll() is not None:
+                    break
                 else:
-                    progress.progress(min(90, max(5, int((time.time() - start) / 25 * 5))), text="Scanning career pages…")
-                log_box.code("\n".join(lines[-30:]), language="text")
-            elif proc.poll() is not None:
-                break
+                    time.sleep(.1)
+                if time.time() - started > 1800:
+                    proc.kill()
+                    log_lines.append("Scan stopped after 30 minutes.")
+                    failed = True
+                    break
+            return_code = proc.wait()
+        finally:
+            # Restore the complete company list after this run.
+            cfg = load_config()
+            cfg["companies"] = normalize_company_rows(st.session_state.companies)
+            save_config(cfg)
+
+        if return_code == 0 and not failed:
+            st.session_state.scan_status = "Completed"
+            progress.progress(100, text="Scan completed")
+            st.success("Scan finished. Results have been refreshed below.")
+            refreshed, refreshed_error = load_results()
+            if refreshed_error:
+                st.warning("The scan ended, but results could not be read back from the database.")
             else:
-                time.sleep(.1)
-            if time.time() - start > 1800:
-                proc.kill()
-                lines.append("Scan stopped after 30 minutes. Try fewer companies or fewer pages.")
-                break
-        rc = proc.wait()
-        progress.progress(100 if rc == 0 else 0, text="Scan completed" if rc == 0 else "Scan failed")
-        st.session_state.last_scan_status = "Completed" if rc == 0 else "Failed — review logs"
-        st.session_state.scan_log = lines[-500:]
-        if rc == 0:
-            st.success("Scan process completed. Check the extracted count in the log and open Dashboard for results.")
-            if any(re.search(r"Extracted\s+0\s+candidate job pages", item, re.I) for item in lines):
-                st.warning("The crawler completed but extracted zero job pages. This is a crawler/discovery issue, not a dashboard styling issue.")
+                data = refreshed
+                st.rerun()
         else:
-            st.error("The crawler exited with an error. Review the output below.")
-        if lines:
-            log_box.code("\n".join(lines[-100:]), language="text")
+            st.session_state.scan_status = "Failed"
+            progress.progress(0, text="Scan failed — check the log")
+            st.error("Scan failed. Review the crawler log below.")
+        if log_lines:
+            log_view.code("\n".join(log_lines[-100:]), language="text")
+            st.session_state.scan_log = log_lines[-500:]
     except Exception as exc:
-        st.session_state.last_scan_status = "Failed to start"
-        st.error(f"Could not start the crawler: {exc}")
+        st.session_state.scan_status = "Failed to start"
+        st.error(f"Could not start agent.py: {exc}")
