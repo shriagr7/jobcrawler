@@ -1,17 +1,9 @@
 {
   "source_mode": "company_career_pages",
-  "companies": [
-    {
-      "name": "ADD COMPANY NAME",
-      "career_url": "https://example.com/careers",
-      "allowed_domains": [
-        "example.com"
-      ]
-    }
-  ],
+  "companies": [],
   "max_pages_per_domain": 80,
   "request_delay_seconds": 2.0,
-  "user_agent": "JobRequirementsResearchBot/1.0 (contact: replace-with-your-contact-email)",
+  "user_agent": "RoleRadarBot/1.0",
   "job_url_keywords": [
     "job",
     "jobs",
@@ -24,7 +16,8 @@
     "jobid",
     "job-id",
     "opportunity",
-    "apply"
+    "apply",
+    "role"
   ],
   "exclude_url_keywords": [
     "login",
@@ -33,7 +26,9 @@
     "terms",
     "cookie",
     "advertisement",
-    "benefits-enrollment"
+    "benefits-enrollment",
+    "sharepoint",
+    "mailto:"
   ],
   "export_csv": "job_requirements.csv",
   "export_excel": "job_requirements.xlsx",
