@@ -32,5 +32,13 @@
   ],
   "export_csv": "job_requirements.csv",
   "export_excel": "job_requirements.xlsx",
-  "database_url_env": "DATABASE_URL"
+  "database_url_env": "DATABASE_URL",
+  "enable_playwright": true,
+  "playwright_timeout_ms": 25000,
+  "playwright_render_wait_ms": 1200,
+  "playwright_scroll_count": 3,
+  "playwright_load_more_clicks": 3,
+  "playwright_min_static_text_chars": 1200,
+  "playwright_min_job_links": 2,
+  "general_link_discovery_pages": 10
 }
