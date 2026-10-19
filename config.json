@@ -1,0 +1,41 @@
+{
+  "source_mode": "company_career_pages",
+  "companies": [
+    {
+      "name": "ADD COMPANY NAME",
+      "career_url": "https://example.com/careers",
+      "allowed_domains": [
+        "example.com"
+      ]
+    }
+  ],
+  "max_pages_per_domain": 80,
+  "request_delay_seconds": 2.0,
+  "user_agent": "JobRequirementsResearchBot/1.0 (contact: replace-with-your-contact-email)",
+  "job_url_keywords": [
+    "job",
+    "jobs",
+    "career",
+    "careers",
+    "opening",
+    "position",
+    "vacancy",
+    "requisition",
+    "jobid",
+    "job-id",
+    "opportunity",
+    "apply"
+  ],
+  "exclude_url_keywords": [
+    "login",
+    "signup",
+    "privacy",
+    "terms",
+    "cookie",
+    "advertisement",
+    "benefits-enrollment"
+  ],
+  "export_csv": "job_requirements.csv",
+  "export_excel": "job_requirements.xlsx",
+  "database_url_env": "DATABASE_URL"
+}
