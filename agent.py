@@ -284,8 +284,84 @@ def is_job_detail_url(url: str, seed_url: str, keywords: list[str]) -> bool:
     return any(keyword.lower() in path_and_query for keyword in keywords)
 
 
+# Well-known applicant-tracking systems (ATS). External ATS links are followed only
+# when they are linked from a company's configured careers page and look job-related.
+KNOWN_ATS_DOMAINS = {
+    "greenhouse.io", "lever.co", "ashbyhq.com", "myworkdayjobs.com",
+    "workday.com", "smartrecruiters.com", "icims.com", "jobvite.com",
+    "bamboohr.com", "teamtailor.com", "recruitee.com", "workable.com",
+    "applytojob.com", "successfactors.com", "taleo.net", "oraclecloud.com",
+    "dayforcehcm.com", "phenompeople.com", "rippling.com", "paylocity.com",
+    "ultipro.com", "jazz.co", "hireology.com", "pinpointhq.com",
+    "applicantpro.com", "jobappnetwork.com", "careers-page.com",
+    "breezy.hr", "breezy.com", "personio.com", "teamtailor.com",
+}
+JOB_CONTEXT_RE = re.compile(
+    r"job|career|position|opening|vacanc|requisition|posting|listing|search.?result|"
+    r"job.?title|job.?card|role.?card|opportunit|employment|job.?item|career.?item",
+    re.I,
+)
+GENERIC_LINK_RE = re.compile(
+    r"^(apply(?: now)?|apply here|view|view job|view role|view position|details|"
+    r"learn more|read more|click here|view details|more details|more|search jobs|browse jobs|current openings|"
+    r"open positions|all positions|all jobs|all job openings|job opportunities|career opportunities|"
+    r"view all jobs|see all jobs|find a job|browse careers|careers?|join our team|see details|job details|show more)$", re.I,
+)
+
+
+def host_is_allowed(host: str, allowed: set[str]) -> bool:
+    """Match configured hostnames and their subdomains."""
+    host = (host or "").lower().removeprefix("www.").rstrip(".")
+    for domain in allowed:
+        domain = (domain or "").lower().removeprefix("www.").strip("./")
+        if domain and (host == domain or host.endswith("." + domain)):
+            return True
+    return False
+
+
+def is_known_ats_host(host: str) -> bool:
+    host = (host or "").lower().removeprefix("www.").rstrip(".")
+    return any(host == domain or host.endswith("." + domain) for domain in KNOWN_ATS_DOMAINS)
+
+
+def looks_like_job_title(label: str) -> bool:
+    label = clean(label)
+    if not (5 <= len(label) <= 150) or GENERIC_LINK_RE.match(label):
+        return False
+    if len(label.split()) > 18:
+        return False
+    if re.search(r"\b(cookie settings|privacy policy|terms of use|sign in|log in|subscribe|newsletter)\b", label, re.I):
+        return False
+    return bool(re.search(r"[A-Za-z]{2,}", label))
+
+
+def card_context_for_anchor(anchor: Any) -> tuple[Any | None, str]:
+    """Return the closest plausible job-card ancestor and its semantic attributes."""
+    node = anchor
+    fallback = None
+    fallback_attrs = ""
+    for _ in range(7):
+        if node is None or not getattr(node, "name", None):
+            break
+        attrs = []
+        for key in ("class", "id", "role", "aria-label", "data-testid", "data-automation", "data-test", "itemprop"):
+            value = node.get(key, "")
+            if isinstance(value, list):
+                attrs.extend(str(x) for x in value)
+            elif value:
+                attrs.append(str(value))
+        attr_text = " ".join(attrs)
+        text_len = len(clean(node.get_text(" ", strip=True)))
+        if JOB_CONTEXT_RE.search(attr_text) and text_len <= 6000:
+            return node, attr_text
+        if node.name in {"article", "li", "tr"} and text_len <= 6000:
+            fallback, fallback_attrs = node, attr_text
+        node = node.parent
+    return fallback, fallback_attrs
+
+
 def anchor_looks_job_related(anchor: Any, target_url: str, keywords: list[str]) -> bool:
-    """Classify links using the URL path/query, link text, and nearby card semantics."""
+    """Classify role links by URL, label, card semantics, or a recognized ATS URL."""
     parts = urlparse(target_url)
     path_and_query = f"{parts.path}?{parts.query}".lower()
     if any(keyword.lower() in path_and_query for keyword in keywords):
@@ -294,25 +370,92 @@ def anchor_looks_job_related(anchor: Any, target_url: str, keywords: list[str]) 
     label = clean(anchor.get_text(" ", strip=True))[:180]
     if re.search(
         r"\b(apply|view (?:job|role|position)|see (?:job|role|position)|job details|"
-        r"current (?:jobs|roles|positions|openings)|open positions|browse jobs)\b",
+        r"current (?:jobs|roles|positions|openings)|open positions|browse jobs|job description)\b",
         label,
         re.I,
     ):
         return True
 
-    context_parts = []
-    node = anchor
-    for _ in range(4):
-        if node is None or not getattr(node, "attrs", None):
-            break
-        context_parts.extend(node.get("class", []) if isinstance(node.get("class"), list) else [str(node.get("class", ""))])
-        context_parts.append(str(node.get("id", "")))
-        node = node.parent
-    context = " ".join(context_parts).lower()
-    return bool(
-        4 <= len(label) <= 150
-        and re.search(r"job|career|opening|position|requisition|vacanc|role|posting", context)
-    )
+    card, attr_context = card_context_for_anchor(anchor)
+    if card is not None and JOB_CONTEXT_RE.search(attr_context):
+        return True
+
+    # Some ATS providers use opaque IDs without /job/ or /careers/ in the URL.
+    if is_known_ats_host(parts.hostname or "") and looks_like_job_title(label):
+        path_segments = [segment for segment in parts.path.split("/") if segment]
+        if len(path_segments) >= 2:
+            return True
+    return False
+
+
+def extract_listing_cards(
+    soup: BeautifulSoup,
+    page_url: str,
+    allowed: set[str],
+    keywords: list[str],
+) -> list[dict[str, str]]:
+    """Extract title/link pairs from visible job cards when listing pages lack JobPosting JSON-LD."""
+    found: dict[str, dict[str, str]] = {}
+    for anchor in soup.find_all("a", href=True):
+        href = clean(anchor.get("href"))
+        if not href or href.startswith(("mailto:", "tel:", "javascript:", "data:")):
+            continue
+        target = canonical_url(urljoin(page_url, href))
+        parts = urlparse(target)
+        host = normalized_host(target)
+        if parts.scheme not in ("http", "https"):
+            continue
+        # The calling page must actually link to an ATS; this is not a general-purpose
+        # crawler for arbitrary external sites. The caller still checks robots.txt.
+        if not host_is_allowed(host, allowed) and not is_known_ats_host(host):
+            continue
+
+        label = clean(anchor.get_text(" ", strip=True)) or clean(anchor.get("aria-label", ""))
+        if GENERIC_LINK_RE.match(label):
+            continue
+        card, attrs = card_context_for_anchor(anchor)
+        card_text = clean(card.get_text(" ", strip=True))[:5000] if card is not None else label
+        title = label
+        if not looks_like_job_title(title) and card is not None:
+            title_node = card.find(["h1", "h2", "h3", "h4", "h5"])
+            if title_node:
+                title = clean(title_node.get_text(" ", strip=True))
+            if not looks_like_job_title(title):
+                # Some ATS pages mark title elements via data attributes rather than headings.
+                title_node = card.select_one("[data-automation*='title'], [data-testid*='title'], [class*='job-title'], [class*='posting-title'], [itemprop='title']")
+                if title_node:
+                    title = clean(title_node.get_text(" ", strip=True))
+
+        path_hint = any(keyword.lower() in f"{parts.path}?{parts.query}".lower() for keyword in keywords)
+        semantic_card = card is not None and bool(JOB_CONTEXT_RE.search(attrs))
+        ats_hint = is_known_ats_host(host) and len([x for x in parts.path.split("/") if x]) >= 2
+        if not looks_like_job_title(title):
+            continue
+        if not (path_hint or semantic_card or ats_hint):
+            continue
+        if any(word in f"{parts.path}?{parts.query}".lower() for word in DEFAULT_EXCLUDE_URL_KEYWORDS):
+            continue
+
+        # Prefer explicit machine-readable location labels in the card.
+        location = ""
+        if card is not None:
+            loc_node = card.select_one("[itemprop='jobLocation'], [data-automation*='location'], [data-testid*='location'], [class*='location'], [class*='Location']")
+            if loc_node:
+                location = clean(loc_node.get_text(" ", strip=True))[:250]
+        item = {
+            "job_title": title,
+            "company": "",
+            "location_mention": location,
+            "employment_type_mention": "",
+            "description": card_text,
+            "date_posted": "",
+            "valid_through": "",
+            "url": target,
+            "job_id": "",
+            "_specific_url": True,
+        }
+        found[target] = item
+    return list(found.values())
 
 
 def parse_page_html(html: str) -> tuple[BeautifulSoup, BeautifulSoup, list[dict[str, str]], str, str]:
@@ -338,7 +481,7 @@ def relevant_job_link_count(soup: BeautifulSoup, page_url: str, allowed: set[str
             continue
         target = canonical_url(urljoin(page_url, href))
         parts = urlparse(target)
-        if parts.scheme not in ("http", "https") or normalized_host(target) not in allowed:
+        if parts.scheme not in ("http", "https") or not (host_is_allowed(normalized_host(target), allowed) or is_known_ats_host(normalized_host(target))):
             continue
         if anchor_looks_job_related(anchor, target, keywords):
             found.add(target)
@@ -359,6 +502,15 @@ def should_render_with_browser(
     """Choose Playwright only when static HTML likely lacks rendered job content."""
     if jobdata_list or not bool(cfg.get("enable_playwright", True)):
         return False
+
+    # The configured URL is the highest-value page to render: modern career portals often
+    # place all job cards in a client-side widget while static HTML looks like a complete page.
+    is_seed_listing = (
+        canonical_url(page_url).rstrip("/") == canonical_url(seed_url).rstrip("/")
+        and not is_job_detail_url(page_url, seed_url, keywords)
+    )
+    if is_seed_listing:
+        return True
 
     min_text = max(200, int(cfg.get("playwright_min_static_text_chars", 1200)))
     min_links = max(0, int(cfg.get("playwright_min_job_links", 2)))
@@ -395,7 +547,7 @@ def render_page_with_playwright(
         return None, url, "Playwright browser context is unavailable"
 
     timeout_ms = max(8000, int(cfg.get("playwright_timeout_ms", 25000)))
-    wait_ms = max(0, min(10000, int(cfg.get("playwright_render_wait_ms", 1200))))
+    wait_ms = max(0, min(10000, int(cfg.get("playwright_render_wait_ms", 2500))))
     scroll_count = max(0, min(8, int(cfg.get("playwright_scroll_count", 3))))
     load_more_clicks = max(0, min(8, int(cfg.get("playwright_load_more_clicks", 3))))
     page = None
@@ -483,6 +635,18 @@ def start_playwright(cfg: dict, user_agent: str) -> tuple[Any, Any, Any]:
                 pass
         print(f"WARNING: Could not start Playwright Chromium ({type(exc).__name__}: {exc}). Static HTML fallback only.")
         return None, None, None
+
+
+def is_listing_page_title(page_title: str) -> bool:
+    """Recognize common careers/search results page titles to avoid saving them as jobs."""
+    first_part = re.split(r"\s+[|–—-]\s+", clean(page_title), maxsplit=1)[0].strip().lower()
+    return bool(re.match(
+        r"^(?:careers?|jobs?|open positions|current openings|job search|search jobs|find jobs|"
+        r"join our team|career opportunities|job opportunities|all positions|available roles|"
+        r"open roles|search openings)(?:\b|$)",
+        first_part,
+        re.I,
+    ))
 
 
 def extract_job_record(
@@ -697,7 +861,7 @@ def main() -> None:
                     continue
                 parsed = urlparse(url)
                 host = normalized_host(url)
-                if parsed.scheme not in ("http", "https") or host not in allowed:
+                if parsed.scheme not in ("http", "https") or not host_is_allowed(host, allowed):
                     continue
                 seen.add(url)
                 allowed_by_robots, robots_message = robots_check(url, ua, session, robots_cache)
@@ -713,9 +877,13 @@ def main() -> None:
                     response = session.get(url, timeout=25, allow_redirects=True)
                     final_url = canonical_url(response.url)
                     final_host = normalized_host(final_url)
-                    if final_host not in allowed:
-                        print(f"SKIP redirect outside allowed_domains: {url} -> {final_url}")
-                        continue
+                    if not host_is_allowed(final_host, allowed):
+                        if is_known_ats_host(final_host):
+                            allowed.add(final_host)
+                            print(f"TRUSTED ATS REDIRECT: {url} -> {final_url} (robots.txt will still be checked)")
+                        else:
+                            print(f"SKIP redirect outside allowed_domains: {url} -> {final_url}")
+                            continue
                     if final_url != url:
                         redirect_allowed, redirect_message = robots_check(final_url, ua, session, robots_cache)
                         if not redirect_allowed:
@@ -740,9 +908,13 @@ def main() -> None:
                     if browser_context is not None:
                         rendered_html, rendered_url, render_note = render_page_with_playwright(browser_context, url, cfg)
                         if rendered_html:
-                            if normalized_host(rendered_url) not in allowed:
-                                print(f"SKIP browser redirect outside allowed_domains: {url} -> {rendered_url}")
-                                continue
+                            if not host_is_allowed(normalized_host(rendered_url), allowed):
+                                if is_known_ats_host(normalized_host(rendered_url)):
+                                    allowed.add(normalized_host(rendered_url))
+                                    print(f"TRUSTED ATS BROWSER REDIRECT: {url} -> {rendered_url}")
+                                else:
+                                    print(f"SKIP browser redirect outside allowed_domains: {url} -> {rendered_url}")
+                                    continue
                             if rendered_url != url:
                                 redirect_allowed, redirect_message = robots_check(rendered_url, ua, session, robots_cache)
                                 if not redirect_allowed:
@@ -777,9 +949,13 @@ def main() -> None:
                 ):
                     rendered_html, rendered_url, render_note = render_page_with_playwright(browser_context, final_url, cfg)
                     if rendered_html:
-                        if normalized_host(rendered_url) not in allowed:
-                            print(f"SKIP browser redirect outside allowed_domains: {final_url} -> {rendered_url}")
-                            continue
+                        if not host_is_allowed(normalized_host(rendered_url), allowed):
+                            if is_known_ats_host(normalized_host(rendered_url)):
+                                allowed.add(normalized_host(rendered_url))
+                                print(f"TRUSTED ATS BROWSER REDIRECT: {final_url} -> {rendered_url}")
+                            else:
+                                print(f"SKIP browser redirect outside allowed_domains: {final_url} -> {rendered_url}")
+                                continue
                         if rendered_url != final_url:
                             redirect_allowed, redirect_message = robots_check(rendered_url, ua, session, robots_cache)
                             if not redirect_allowed:
@@ -800,23 +976,52 @@ def main() -> None:
                         print(f"PLAYWRIGHT FALLBACK FAILED: {final_url} | {render_note}")
 
                 page_jobs_before = len(records)
+                # Extract cards before classifying the current page as a job detail page.
+                # URLs like /careers/jobs/ or /positions/ can be listings, not one job.
+                cards: list[dict[str, str]] = []
+                if not jobdata_list:
+                    cards = extract_listing_cards(raw_soup, final_url, allowed, job_keywords)
+
                 if jobdata_list:
                     for jobdata in jobdata_list:
                         item_url = clean(jobdata.get("url", ""))
                         record_url = urljoin(final_url, item_url) if item_url else final_url
-                        if normalized_host(record_url) not in allowed:
-                            print(f"SKIP structured job URL outside allowed_domains: {record_url}")
-                            continue
+                        if not host_is_allowed(normalized_host(record_url), allowed):
+                            if is_known_ats_host(normalized_host(record_url)):
+                                allowed.add(normalized_host(record_url))
+                            else:
+                                print(f"SKIP structured job URL outside allowed_domains: {record_url}")
+                                continue
                         jobdata = {**jobdata, "url": record_url, "_specific_url": bool(item_url)}
                         record = extract_job_record(company_name, record_url, page_title, page_text, clean_soup, jobdata)
                         if record:
                             records.append(record)
                             print(f"JOB FOUND [{record['job_status']}]: {record['job_title']} | {record['source_url']}")
-                elif is_detail and has_job_signals and len(page_text) > 400:
-                    record = extract_job_record(company_name, final_url, page_title, page_text, clean_soup, {})
+                elif is_detail and has_job_signals and len(page_text) > 400 and not is_listing_page_title(page_title):
+                    record = extract_job_record(company_name, final_url, page_title, page_text, clean_soup, {"url": final_url, "_specific_url": True})
                     if record:
                         records.append(record)
                         print(f"JOB FOUND [{record['job_status']}]: {record['job_title']} | {final_url}")
+
+                # Save listing-card title/link pairs as discovery records, then crawl their
+                # URLs for full descriptions and requirements. URL-based keys merge both.
+                card_records_added = 0
+                for card_data in cards:
+                    record_url = clean(card_data.get("url", ""))
+                    record_host = normalized_host(record_url)
+                    if is_known_ats_host(record_host) and not host_is_allowed(record_host, allowed):
+                        allowed.add(record_host)
+                        print(f"TRUSTED ATS LINK: {record_url} (discovered on {final_url})")
+                    record = extract_job_record(
+                        company_name, record_url, card_data.get("job_title", ""),
+                        card_data.get("description", ""), clean_soup, card_data,
+                    )
+                    if record:
+                        records.append(record)
+                        card_records_added += 1
+                        print(f"JOB CARD FOUND [{record['job_status']}]: {record['job_title']} | {record['source_url']}")
+                if cards:
+                    print(f"LISTING CARD DIAGNOSTIC: candidates={len(cards)}, records_added={card_records_added}, page={final_url}")
 
                 links_added = 0
                 job_targets: list[str] = []
@@ -828,14 +1033,23 @@ def main() -> None:
                     target = canonical_url(urljoin(final_url, href))
                     target_parts = urlparse(target)
                     target_host = normalized_host(target)
-                    if target_parts.scheme not in ("http", "https") or target_host not in allowed:
+                    if target_parts.scheme not in ("http", "https"):
                         continue
                     path_query = f"{target_parts.path}?{target_parts.query}".lower()
                     if any(word in path_query for word in exclude_keywords):
                         continue
                     if target in seen or target in queue:
                         continue
-                    if anchor_looks_job_related(anchor, target, job_keywords):
+                    looks_job = anchor_looks_job_related(anchor, target, job_keywords)
+                    if not host_is_allowed(target_host, allowed):
+                        if is_known_ats_host(target_host) and looks_job:
+                            allowed.add(target_host)
+                            print(f"TRUSTED ATS LINK: {target} (discovered on {final_url})")
+                        else:
+                            if looks_job:
+                                print(f"EXTERNAL JOB LINK NOT FOLLOWED: {target} | add hostname '{target_host}' to this company’s allowed_domains if this is its genuine ATS")
+                            continue
+                    if looks_job:
                         job_targets.append(target)
                     elif target not in general_links_queued:
                         general_targets.append(target)
@@ -853,6 +1067,9 @@ def main() -> None:
                             queue.append(target)
                             general_links_queued.add(target)
                             links_added += 1
+
+                if not jobdata_list and not cards and (not is_detail or is_listing_page_title(page_title)):
+                    print(f"NO LISTING CARDS DETECTED: DOM has no structured job data or recognizable job cards | {final_url}")
 
                 visited_total += 1
                 print(
