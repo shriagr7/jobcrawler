@@ -5,9 +5,11 @@ It obeys robots.txt, crawls only configured domains, and does not use paid APIs.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import uuid
 import time
 import urllib.robotparser
 from collections import deque
@@ -31,10 +33,11 @@ DEFAULT_EXCLUDE_URL_KEYWORDS = [
     "benefits-enrollment", "sharepoint", "mailto:",
 ]
 FIELDS = [
-    "job_title", "company", "date_posted", "location_mention",
-    "employment_type_mention", "work_arrangement_mention", "experience_mentions",
-    "education_mentions", "salary_mention", "responsibilities", "requirements",
-    "preferred_qualifications", "benefits", "description", "source_url",
+    "job_key", "job_id", "job_title", "company", "date_posted", "valid_through",
+    "job_status", "location_mention", "employment_type_mention",
+    "work_arrangement_mention", "experience_mentions", "education_mentions",
+    "salary_mention", "responsibilities", "requirements", "preferred_qualifications",
+    "benefits", "description", "source_url", "first_seen_utc", "last_seen_utc",
     "extracted_at_utc", "extraction_note",
 ]
 
@@ -132,8 +135,10 @@ def address_text(value: Any) -> str:
     return ", ".join(clean(x) for x in parts if clean(x))
 
 
-def jsonld_job_data(soup: BeautifulSoup) -> dict[str, str]:
-    """Extract common Schema.org JobPosting fields, if present."""
+def jsonld_job_data(soup: BeautifulSoup) -> list[dict[str, str]]:
+    """Extract every Schema.org JobPosting object found in JSON-LD."""
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
     for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
         raw = tag.string or tag.get_text()
         try:
@@ -148,8 +153,7 @@ def jsonld_job_data(soup: BeautifulSoup) -> dict[str, str]:
             locations = []
             for loc in location:
                 if isinstance(loc, dict):
-                    addr = loc.get("address", {})
-                    val = address_text(addr)
+                    val = address_text(loc.get("address", {}))
                     if val:
                         locations.append(val)
             emp = item.get("employmentType", "")
@@ -157,7 +161,12 @@ def jsonld_job_data(soup: BeautifulSoup) -> dict[str, str]:
                 emp = "; ".join(clean(x) for x in emp if clean(x))
             description_html = item.get("description", "")
             description = BeautifulSoup(str(description_html), "html.parser").get_text(" ", strip=True)
-            return {
+            identifier = item.get("identifier", "")
+            if isinstance(identifier, dict):
+                identifier = identifier.get("value") or identifier.get("name") or ""
+            elif isinstance(identifier, list):
+                identifier = "; ".join(clean(x.get("value") if isinstance(x, dict) else x) for x in identifier)
+            record = {
                 "job_title": clean(item.get("title", "")),
                 "company": clean(org.get("name", "")) if isinstance(org, dict) else "",
                 "location_mention": "; ".join(dict.fromkeys(locations)),
@@ -165,8 +174,15 @@ def jsonld_job_data(soup: BeautifulSoup) -> dict[str, str]:
                 "description": clean(description),
                 "date_posted": clean(item.get("datePosted", "")),
                 "valid_through": clean(item.get("validThrough", "")),
+                "url": clean(item.get("url", "")),
+                "job_id": clean(identifier),
             }
-    return {}
+            # Avoid duplicate objects included in multiple JSON-LD scripts.
+            dedupe_key = "|".join([record["url"], record["job_id"], record["job_title"], record["company"]])
+            if dedupe_key not in seen:
+                seen.add(dedupe_key)
+                results.append(record)
+    return results
 
 
 def extract_sections(soup: BeautifulSoup, full_text: str) -> dict[str, str]:
@@ -225,6 +241,7 @@ def infer_fields(title: str, body_text: str) -> dict[str, str]:
 
 
 def company_configs(cfg: dict) -> list[dict]:
+    """Return configured companies, skipping example placeholders."""
     companies = cfg.get("companies", [])
     valid = [
         company for company in companies
@@ -236,7 +253,7 @@ def company_configs(cfg: dict) -> list[dict]:
     ]
     if not valid:
         raise SystemExit(
-            "No valid companies found. Add a company name, official career_url, and allowed_domains in config.json."
+            "No valid companies found. Add a company name and official career_url in config.json."
         )
     return valid
 
@@ -261,20 +278,51 @@ def extract_job_record(
     page_title: str,
     page_text: str,
     clean_soup: BeautifulSoup,
-    jobdata: dict[str, str],
+    jobdata: dict[str, str] | None = None,
 ) -> dict[str, str] | None:
-    inferred = infer_fields(jobdata.get("job_title") or page_title, jobdata.get("description") or page_text)
+    """Build a job record and classify its status conservatively."""
+    jobdata = jobdata or {}
+    title = jobdata.get("job_title") or page_title
+    body = jobdata.get("description") or page_text
+    inferred = infer_fields(title, body)
     sections = extract_sections(clean_soup, page_text)
-    title = jobdata.get("job_title") or inferred["job_title"]
-    # Skip generic career/home titles even when a page contains hiring-related words.
     if not title or len(title) > 300:
         return None
-    if re.search(r"\b(careers? at|join our team|current openings|job opportunities)\b", title, re.I):
+    if re.search(r"\b(careers? at|join our team|current openings|job opportunities|search jobs)\b", title, re.I):
         return None
+
+    now = datetime.now(timezone.utc)
+    valid_through = clean(jobdata.get("valid_through", ""))
+    parsed_expiry = pd.to_datetime(valid_through, errors="coerce", utc=True)
+    closure_pattern = r"(?:this position|this job|the job|the position) (?:is )?(?:closed|no longer available|has been filled)|no longer accepting applications|job posting has expired|position has been filled|vacancy is closed"
+    if pd.notna(parsed_expiry) and parsed_expiry.to_pydatetime() < now:
+        status = "Expired"
+    elif re.search(closure_pattern, page_text, re.I):
+        status = "Closed"
+    elif re.search(r"apply now|apply for this job|submit application|start application|apply today", page_text, re.I):
+        status = "Likely open"
+    else:
+        status = "Needs verification"
+
+    candidate_url = clean(jobdata.get("url", ""))
+    if candidate_url:
+        candidate_url = urljoin(source_url, candidate_url)
+    else:
+        candidate_url = source_url
+
+    posted = clean(jobdata.get("date_posted", ""))
+    job_id = clean(jobdata.get("job_id", ""))
+    identity = job_id or (candidate_url if jobdata.get("_specific_url") else f"{candidate_url}|{title}|{jobdata.get('location_mention', '')}")
+    job_key = hashlib.sha256(f"{company_name.lower()}|{identity.lower()}".encode("utf-8")).hexdigest()
+    timestamp = now.isoformat()
     return {
+        "job_key": job_key,
+        "job_id": job_id,
         "job_title": title,
         "company": jobdata.get("company") or company_name,
-        "date_posted": jobdata.get("date_posted", ""),
+        "date_posted": posted,
+        "valid_through": valid_through,
+        "job_status": status,
         "location_mention": jobdata.get("location_mention", ""),
         "employment_type_mention": jobdata.get("employment_type_mention") or inferred["employment_type_mention"],
         "work_arrangement_mention": inferred["work_arrangement_mention"],
@@ -286,9 +334,11 @@ def extract_job_record(
         "preferred_qualifications": sections["preferred_qualifications"],
         "benefits": sections["benefits"],
         "description": jobdata.get("description") or sections["description"],
-        "source_url": source_url,
-        "extracted_at_utc": datetime.now(timezone.utc).isoformat(),
-        "extraction_note": "Rules-based extraction; verify against the source page. Blank fields mean not confidently detected.",
+        "source_url": candidate_url,
+        "first_seen_utc": timestamp,
+        "last_seen_utc": timestamp,
+        "extracted_at_utc": timestamp,
+        "extraction_note": "Rules-based extraction. 'Likely open' is a heuristic, not a guarantee; verify on the source page. Blank fields mean not confidently detected.",
     }
 
 
@@ -315,46 +365,70 @@ def database_engine(database_url: str):
 
 
 def save_records_to_postgres(df: pd.DataFrame, database_url: str) -> None:
-    """Append/update scanned URLs without replacing results from other companies."""
+    """Create the schema and upsert this scan without deleting other companies' rows."""
     engine = database_engine(database_url)
     quoted_columns = ", ".join(f'"{column}"' for column in FIELDS)
+    update_columns = [c for c in FIELDS if c not in ("job_key", "first_seen_utc")]
+    update_sql = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in update_columns)
+    update_sql += ", \"first_seen_utc\" = COALESCE(NULLIF(job_postings.first_seen_utc, ''), EXCLUDED.\"first_seen_utc\")"
+    stage = "job_postings_scan_stage_" + uuid.uuid4().hex
     try:
         with engine.begin() as con:
-            # Create a stable schema if the table has not existed yet. All extracted
-            # values are stored as TEXT; the dashboard can parse dates for display.
             con.execute(text("""
                 CREATE TABLE IF NOT EXISTS job_postings (
-                    job_title TEXT, company TEXT, date_posted TEXT,
-                    location_mention TEXT, employment_type_mention TEXT,
-                    work_arrangement_mention TEXT, experience_mentions TEXT,
-                    education_mentions TEXT, salary_mention TEXT,
-                    responsibilities TEXT, requirements TEXT,
-                    preferred_qualifications TEXT, benefits TEXT,
-                    description TEXT, source_url TEXT, extracted_at_utc TEXT,
-                    extraction_note TEXT
+                    job_key TEXT, job_id TEXT, job_title TEXT, company TEXT, date_posted TEXT,
+                    valid_through TEXT, job_status TEXT, location_mention TEXT,
+                    employment_type_mention TEXT, work_arrangement_mention TEXT,
+                    experience_mentions TEXT, education_mentions TEXT, salary_mention TEXT,
+                    responsibilities TEXT, requirements TEXT, preferred_qualifications TEXT,
+                    benefits TEXT, description TEXT, source_url TEXT, first_seen_utc TEXT,
+                    last_seen_utc TEXT, extracted_at_utc TEXT, extraction_note TEXT
                 )
             """))
             for column in FIELDS:
                 con.execute(text(f'ALTER TABLE job_postings ADD COLUMN IF NOT EXISTS "{column}" TEXT'))
-
-            stage = "job_postings_scan_stage"
-            # Stage is only temporary scan data; target rows for other URLs stay intact.
-            df.reindex(columns=FIELDS).to_sql(
-                stage, con, if_exists="replace", index=False, method="multi", chunksize=250
-            )
+            con.execute(text("CREATE INDEX IF NOT EXISTS idx_job_company ON job_postings (company)"))
+            con.execute(text("CREATE INDEX IF NOT EXISTS idx_job_title ON job_postings (job_title)"))
+            con.execute(text("CREATE INDEX IF NOT EXISTS idx_job_status ON job_postings (job_status)"))
+            # Partial uniqueness avoids collisions with legacy rows that have no job_key.
+            con.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_job_postings_job_key_unique
+                ON job_postings (job_key)
+                WHERE job_key IS NOT NULL AND job_key <> ''
+            """))
             if not df.empty:
+                stage_df = df.reindex(columns=FIELDS).copy()
+                stage_df = stage_df.drop_duplicates(subset=["job_key"], keep="last")
+                stage_df.to_sql(stage, con, if_exists="replace", index=False, method="multi", chunksize=250)
+                # Remove matching pre-upgrade rows that did not have job_key populated.
                 con.execute(text(f"""
                     DELETE FROM job_postings AS target
                     USING {stage} AS incoming
-                    WHERE target.source_url = incoming.source_url
-                      AND incoming.source_url IS NOT NULL
+                    WHERE (target.job_key IS NULL OR target.job_key = '')
+                      AND target.company = incoming.company
+                      AND target.job_title = incoming.job_title
+                      AND target.source_url = incoming.source_url
                 """))
-                con.execute(text(f"INSERT INTO job_postings ({quoted_columns}) SELECT {quoted_columns} FROM {stage}"))
-            con.execute(text(f"DROP TABLE IF EXISTS {stage}"))
-            con.execute(text("CREATE INDEX IF NOT EXISTS idx_job_company ON job_postings (company)"))
-            con.execute(text("CREATE INDEX IF NOT EXISTS idx_job_title ON job_postings (job_title)"))
+                con.execute(text(f"""
+                    INSERT INTO job_postings ({quoted_columns})
+                    SELECT {quoted_columns} FROM {stage}
+                    ON CONFLICT (job_key) WHERE job_key IS NOT NULL AND job_key <> ''
+                    DO UPDATE SET {update_sql}
+                """))
+                con.execute(text(f"DROP TABLE IF EXISTS {stage}"))
     finally:
         engine.dispose()
+
+
+def export_all_database_results(database_url: str) -> pd.DataFrame:
+    """Read the cumulative table for CSV/Excel exports."""
+    engine = database_engine(database_url)
+    try:
+        with engine.connect() as con:
+            return pd.read_sql(text("SELECT * FROM job_postings ORDER BY company, job_title"), con).fillna("")
+    finally:
+        engine.dispose()
+
 
 
 def main() -> None:
@@ -368,15 +442,11 @@ def main() -> None:
     ua = clean(cfg.get("user_agent")) or "RoleRadarBot/1.0"
     delay = max(1.0, float(cfg.get("request_delay_seconds", 2)))
     max_pages = max(1, int(cfg.get("max_pages_per_domain", cfg.get("max_pages_per_company", 80))))
-    job_keywords = [clean(k).lower() for k in cfg.get("job_url_keywords", DEFAULT_JOB_URL_KEYWORDS) if clean(k)]
-    if not job_keywords:
-        job_keywords = DEFAULT_JOB_URL_KEYWORDS
-    exclude_keywords = [clean(k).lower() for k in cfg.get("exclude_url_keywords", DEFAULT_EXCLUDE_URL_KEYWORDS) if clean(k)]
-    if not exclude_keywords:
-        exclude_keywords = DEFAULT_EXCLUDE_URL_KEYWORDS
+    job_keywords = [clean(k).lower() for k in cfg.get("job_url_keywords", DEFAULT_JOB_URL_KEYWORDS) if clean(k)] or DEFAULT_JOB_URL_KEYWORDS
+    exclude_keywords = [clean(k).lower() for k in cfg.get("exclude_url_keywords", DEFAULT_EXCLUDE_URL_KEYWORDS) if clean(k)] or DEFAULT_EXCLUDE_URL_KEYWORDS
 
     session = requests.Session()
-    session.headers.update({"User-Agent": ua, "Accept": "text/html,application/xhtml+xml,application/xhtml+xml;q=0.9,*/*;q=0.8"})
+    session.headers.update({"User-Agent": ua, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
     robots_cache: dict[str, tuple[bool, urllib.robotparser.RobotFileParser | None, str]] = {}
     records: list[dict[str, str]] = []
     visited_total = 0
@@ -390,9 +460,10 @@ def main() -> None:
             continue
 
         configured_domains = company_cfg.get("allowed_domains", []) or []
-        allowed = {clean(domain).lower().removeprefix("www.") for domain in configured_domains if clean(domain)}
-        if not allowed:
-            allowed = {normalized_host(seed)}
+        if isinstance(configured_domains, str):
+            configured_domains = re.split(r"[,;\s]+", configured_domains)
+        allowed = {clean(domain).lower().removeprefix("www.").strip("/") for domain in configured_domains if clean(domain)}
+        allowed.add(normalized_host(seed))
         if normalized_host(seed) not in allowed:
             print(f"CONFIG ERROR {company_name}: career_url host {normalized_host(seed)!r} is not in allowed_domains {sorted(allowed)!r}")
             continue
@@ -400,7 +471,6 @@ def main() -> None:
         company_records_before = len(records)
         queue = deque([canonical_url(seed)])
         seen: set[str] = set()
-        rejected = 0
         print(f"\n=== {company_name} ===")
         print(f"Start URL: {seed} | allowed domains: {', '.join(sorted(allowed))} | page limit: {max_pages}")
 
@@ -434,7 +504,7 @@ def main() -> None:
                     continue
 
                 raw_soup = BeautifulSoup(response.text, "html.parser")
-                jobdata = jsonld_job_data(raw_soup)
+                jobdata_list = jsonld_job_data(raw_soup)
                 clean_soup = BeautifulSoup(response.text, "html.parser")
                 for tag in clean_soup(["script", "style", "noscript", "svg", "nav", "footer", "header"]):
                     tag.decompose()
@@ -445,17 +515,27 @@ def main() -> None:
 
                 is_detail = is_job_detail_url(final_url, seed, job_keywords)
                 has_job_signals = bool(re.search(
-                    r"responsibilities|qualifications|required skills|years of experience|apply now|job description|jobposting|what you.?ll do|what you.?ll need",
+                    r"responsibilities|qualifications|required skills|years of experience|apply now|job description|jobposting|what you.?ll do|what you.?ll need|no longer accepting applications",
                     page_text, re.I,
                 ))
-                if jobdata or (is_detail and has_job_signals and len(page_text) > 400):
-                    record = extract_job_record(company_name, final_url, page_title, page_text, clean_soup, jobdata)
+                if jobdata_list:
+                    for jobdata in jobdata_list:
+                        item_url = clean(jobdata.get("url", ""))
+                        record_url = urljoin(final_url, item_url) if item_url else final_url
+                        # A structured URL is accepted only when it remains in an explicitly allowed domain.
+                        if normalized_host(record_url) not in allowed:
+                            record_url = final_url
+                        jobdata = {**jobdata, "url": record_url, "_specific_url": bool(item_url)}
+                        record = extract_job_record(company_name, record_url, page_title, page_text, clean_soup, jobdata)
+                        if record:
+                            records.append(record)
+                            print(f"JOB FOUND [{record['job_status']}]: {record['job_title']} | {record['source_url']}")
+                elif is_detail and has_job_signals and len(page_text) > 400:
+                    record = extract_job_record(company_name, final_url, page_title, page_text, clean_soup, {})
                     if record:
                         records.append(record)
-                        print(f"JOB FOUND: {record['job_title']} | {final_url}")
+                        print(f"JOB FOUND [{record['job_status']}]: {record['job_title']} | {final_url}")
 
-                # Discover links from every permitted HTML page, not just a fixed
-                # number of links on the start page. Keep the crawl domain-scoped.
                 links_added = 0
                 for anchor in raw_soup.find_all("a", href=True):
                     href = clean(anchor.get("href"))
@@ -470,22 +550,15 @@ def main() -> None:
                     if any(word in lower_url for word in exclude_keywords):
                         continue
                     if target not in seen and target not in queue:
-                        # Prioritize links with job-related words; also follow
-                        # internal links on career pages so ATS/detail links can be found.
                         target_is_job_related = any(word in lower_url for word in job_keywords)
                         if target_is_job_related or len(seen) < 10:
                             queue.append(target)
                             links_added += 1
                 visited_total += 1
-                print(
-                    f"Visited {len(seen)}/{max_pages}: {final_url} | "
-                    f"jobs found this company: {len(records) - company_records_before} | "
-                    f"links queued: {links_added}"
-                )
+                print(f"Visited {len(seen)}/{max_pages}: {final_url} | jobs found this company: {len(records) - company_records_before} | links queued: {links_added}")
             except requests.RequestException as exc:
                 print(f"REQUEST ERROR {url}: {type(exc).__name__}: {exc}")
             except Exception as exc:
-                # A broken page should not crash all of the companies in one scan.
                 print(f"PAGE ERROR {url}: {type(exc).__name__}: {exc}")
             time.sleep(delay)
 
@@ -495,49 +568,41 @@ def main() -> None:
 
     df = pd.DataFrame(records, columns=FIELDS)
     if not df.empty:
-        df = df.drop_duplicates(subset=["source_url"], keep="first")
+        df = df.drop_duplicates(subset=["job_key"], keep="last")
 
     within_days = os.environ.get("SCAN_POSTED_WITHIN_DAYS", "").strip()
-    if within_days:
+    if within_days and not df.empty:
         try:
             days = max(1, int(within_days))
         except ValueError:
             raise SystemExit("SCAN_POSTED_WITHIN_DAYS must be a positive integer, such as 30.")
         before_filter = len(df)
         df, excluded_undated, excluded_outside = filter_posted_within_days(df, days)
-        print(
-            f"Date filter: last {days} days | kept={len(df)} | removed={before_filter - len(df)} "
-            f"(undated={excluded_undated}, outside window/future={excluded_outside})"
-        )
-
-    csv_path = cfg.get("export_csv", "job_requirements.csv")
-    excel_path = cfg.get("export_excel", "job_requirements.xlsx")
-    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    try:
-        df.to_excel(excel_path, index=False)
-    except Exception as exc:
-        print(f"WARNING: Could not create Excel export ({type(exc).__name__}: {exc}). CSV was saved.")
+        print(f"Date filter: last {days} days | kept={len(df)} | removed={before_filter - len(df)} (undated={excluded_undated}, outside window/future={excluded_outside})")
 
     database_env = clean(cfg.get("database_url_env", "DATABASE_URL")) or "DATABASE_URL"
     database_url = os.environ.get(database_env, "").strip()
     if not database_url:
-        raise SystemExit(
-            f"PostgreSQL connection is not configured. Set {database_env} in Render → Environment "
-            "(or Streamlit secrets) before running a scan. CSV export was still created."
-        )
+        raise SystemExit(f"PostgreSQL connection is not configured. Set {database_env} in Render → Environment (or Streamlit secrets).")
     try:
         save_records_to_postgres(df, database_url)
+        export_df = export_all_database_results(database_url)
     except Exception as exc:
-        raise SystemExit(
-            f"PostgreSQL save failed ({type(exc).__name__}: {exc}). Check DATABASE_URL, the psycopg driver, "
-            f"and database permissions. CSV export was saved to {csv_path}."
-        )
+        raise SystemExit(f"PostgreSQL save/read failed ({type(exc).__name__}: {exc}). Check DATABASE_URL, the psycopg driver, and database permissions.")
 
-    print(f"\nDone. Extracted {len(df)} candidate job pages; visited {visited_total} HTML pages; robots/access skips={blocked_total}.")
-    print(f"Created/updated: {csv_path}, {excel_path}, PostgreSQL table job_postings")
+    csv_path = cfg.get("export_csv", "job_requirements.csv")
+    excel_path = cfg.get("export_excel", "job_requirements.xlsx")
+    export_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    try:
+        export_df.to_excel(excel_path, index=False)
+    except Exception as exc:
+        print(f"WARNING: Could not create Excel export ({type(exc).__name__}: {exc}). CSV was saved.")
+
+    print(f"\nDone. Extracted {len(df)} candidate job records in this scan; visited {visited_total} HTML pages; robots/access skips={blocked_total}.")
+    print(f"Created cumulative exports: {csv_path}, {excel_path}; PostgreSQL table: job_postings")
     if not records:
-        print("No job pages were extracted. Check the robots.txt explanations above, the career URL, allowed_domains, and whether the careers site renders job listings with JavaScript.")
-    print("Note: heuristic extraction should be reviewed against each source page. Undisclosed fields remain blank.")
+        print("No job pages were extracted. Check the robots.txt explanations above, the career URL, allowed_domains, and whether the careers site renders jobs with JavaScript.")
+    print("Status note: 'Likely open' is inferred from page signals; verify each job on its official source page. A missing result in a crawl is not automatically treated as closed.")
 
 
 if __name__ == "__main__":
