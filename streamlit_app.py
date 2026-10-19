@@ -29,38 +29,78 @@ st.set_page_config(
 st.markdown(r"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
-:root{--ink:#111d46;--muted:#66748e;--line:#e4eaf5;--blue:#4057ff;--purple:#7650ff}
-html,body,[class*="css"]{font-family:'DM Sans',sans-serif}
-.stApp{background:linear-gradient(120deg,#f6f9ff,#fff 55%,#f5f7ff)}
-.block-container{max-width:1450px;padding-top:1.2rem;padding-bottom:2rem}
+:root{
+  --ink:#101a35; --muted:#72809a; --line:#e4eaf4;
+  --blue:#4776ff; --teal:#31d4c5; --violet:#8764ff;
+  --surface:#ffffff; --canvas:#f3f6fb;
+}
+html, body, [class*="css"]{font-family:'DM Sans',sans-serif}
+.stApp{background:radial-gradient(circle at 4% 0%,#e8f1ff 0,transparent 27%),linear-gradient(180deg,#f7f9fd 0%,#f2f5fa 100%);color:var(--ink)}
+.block-container{max-width:1510px;padding-top:1.5rem;padding-bottom:3rem;padding-left:2rem;padding-right:2rem}
 [data-testid="stHeader"]{background:transparent}
-.brand{display:flex;align-items:center;gap:13px;margin:.2rem 0 1.25rem}
-.brand-icon{width:55px;height:55px;display:flex;align-items:center;justify-content:center;border-radius:17px;background:linear-gradient(135deg,#20cde0,#584cff);color:white;font-size:29px;box-shadow:0 8px 24px #4057ff30}
-.brand-name{font:800 2.2rem Manrope,sans-serif;letter-spacing:-.065em;color:#111d46;line-height:1.05}
-.brand-name span{color:#4057ff}
-.brand-sub{font-size:.9rem;color:#687793;margin-top:.3rem}
-.header-pill{border:1px solid #dce4ff;border-radius:15px;padding:.85rem 1rem;background:#eef2ff;color:#1b2b65;font-weight:600}
-.metric-card{background:white;border:1px solid #e4eaf5;border-radius:15px;padding:1rem;min-height:105px;box-shadow:0 5px 18px #1e3a8a06}
-.metric-row{display:flex;align-items:center;gap:12px}
-.metric-icon{height:46px;width:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:#edf2ff;font-size:23px}
-.metric-value{font:800 1.8rem Manrope,sans-serif;color:#101b49;line-height:1.15}
-.metric-label{font-weight:600;color:#18264d;font-size:.88rem}
-.metric-note{font-size:.73rem;color:#77849c;margin-top:.15rem}
-.panel-title{font:800 1.12rem Manrope,sans-serif;color:#101b49}
-.panel-sub{font-size:.82rem;color:#71809a;margin:.15rem 0 .9rem}
-.panel-icon{display:inline-flex;width:38px;height:38px;align-items:center;justify-content:center;border-radius:11px;background:#eef3ff;margin-right:9px;font-size:20px;vertical-align:middle}
-.company-card{background:#fff;border:1px solid #e4eaf5;border-radius:14px;padding:.8rem 1rem;margin:.45rem 0}
-.company-name{font-weight:700;color:#17244c}
-.company-url{font-size:.78rem;color:#71809a;overflow-wrap:anywhere}
-.status{display:inline-block;border-radius:999px;padding:.2rem .55rem;background:#eef2ff;color:#4057ff;font-size:.72rem;font-weight:700}
-div.stButton>button,div.stFormSubmitButton>button{border-radius:10px;font-weight:700;min-height:2.5rem;border-color:#d9e1f5}
-div.stButton>button[kind="primary"],div.stFormSubmitButton>button[kind="primary"]{background:linear-gradient(100deg,#4057ff,#6849ff);border:0;color:#fff}
-div[data-testid="stProgress"]>div>div{background:linear-gradient(90deg,#4057ff,#8a5cff)}
-[data-testid="stDataFrame"]{border:1px solid #e3e9f4;border-radius:10px;overflow:hidden}
-div[data-testid="stFileUploader"]{background:#f9faff;border:1px dashed #cbd5ee;border-radius:12px;padding:.4rem}
-hr{border-color:#e7ebf5}
+[data-testid="stToolbar"]{right:1.5rem}
+
+/* Hero header */
+.brand{display:flex;align-items:center;gap:17px;margin:.1rem 0 1.65rem;padding:27px 29px;border:1px solid #273b69;border-radius:23px;background:radial-gradient(circle at 88% -35%,rgba(49,212,197,.24) 0,transparent 29%),radial-gradient(circle at 72% 130%,rgba(71,118,255,.28) 0,transparent 34%),linear-gradient(118deg,#0b1633 0%,#142751 58%,#20376a 100%);box-shadow:0 16px 38px rgba(21,39,82,.15);color:#fff;overflow:hidden}
+.brand-icon{width:58px;height:58px;flex:0 0 58px;display:flex;align-items:center;justify-content:center;border-radius:18px;background:linear-gradient(135deg,#31d4c5,#5591ff);color:#071632;font-size:32px;font-weight:800;box-shadow:0 8px 25px rgba(49,212,197,.2)}
+.brand-copy{min-width:0}
+.brand-kicker{font-size:.67rem;letter-spacing:.17em;font-weight:800;color:#9fb5e8;margin-bottom:5px}
+.brand-name{font:800 2.18rem Manrope,sans-serif;letter-spacing:-.065em;color:#fff;line-height:1.04}
+.brand-name span{color:#55e3d1}
+.brand-sub{font-size:.88rem;color:#c2cee8;margin-top:.42rem;line-height:1.5}
+.header-pill{margin-left:auto;white-space:nowrap;border:1px solid rgba(205,221,255,.23);border-radius:999px;padding:.68rem .9rem;background:rgba(255,255,255,.07);color:#e2ebff;font-size:.68rem;letter-spacing:.09em;font-weight:800}
+
+/* Overview intro */
+.section-intro{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:.2rem 0 1.15rem;padding:.1rem 0}
+.section-eyebrow{color:#5675bd;font-size:.68rem;font-weight:800;letter-spacing:.16em;margin-bottom:.32rem}
+.section-heading{font:800 1.48rem Manrope,sans-serif;letter-spacing:-.045em;color:#111d3d;line-height:1.25}
+.section-description{font-size:.87rem;color:#71809a;margin-top:.34rem}
+.overview-chip{display:flex;align-items:center;gap:8px;white-space:nowrap;border:1px solid #dce5f5;background:#fff;border-radius:999px;padding:.62rem .85rem;color:#5a6b89;font-size:.75rem;font-weight:700;box-shadow:0 3px 12px rgba(26,49,91,.04)}
+.overview-dot,.sync-dot{width:8px;height:8px;display:inline-block;border-radius:50%;background:#31c7a7;box-shadow:0 0 0 3px rgba(49,199,167,.14)}
+
+/* KPI cards */
+.metric-card{position:relative;overflow:hidden;background:rgba(255,255,255,.96);border:1px solid #e2e9f4;border-radius:18px;padding:1.05rem 1.1rem;min-height:118px;box-shadow:0 7px 22px rgba(27,51,94,.045);transition:transform .18s ease,box-shadow .18s ease}
+.metric-card:before{content:"";position:absolute;top:0;left:0;width:100%;height:4px;background:linear-gradient(90deg,#31d4c5,#4776ff 58%,#8764ff)}
+.metric-row{display:flex;align-items:center;gap:13px}
+.metric-icon{height:47px;width:47px;flex:0 0 47px;border-radius:15px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#eaf8fb,#eef2ff);font-size:22px;color:#405fe5}
+.metric-value{font:800 1.82rem Manrope,sans-serif;color:#101a35;line-height:1.14;letter-spacing:-.045em}
+.metric-label{font-weight:800;color:#293855;font-size:.82rem;margin-top:.13rem}
+.metric-note{font-size:.72rem;color:#8490a6;margin-top:.25rem}
+
+/* Panels and sections */
+.panel-title{font:800 1.08rem Manrope,sans-serif;color:#14213e;letter-spacing:-.025em}
+.panel-sub{font-size:.82rem;color:#79869e;margin:.28rem 0 1rem;line-height:1.5}
+.panel-icon{display:inline-flex;width:36px;height:36px;align-items:center;justify-content:center;border-radius:12px;background:#eef4ff;color:#4269e8;margin-right:9px;font-size:20px;vertical-align:middle}
+.company-card{background:#fff;border:1px solid #e4eaf4;border-radius:15px;padding:.85rem 1rem;margin:.48rem 0;box-shadow:0 4px 12px rgba(27,51,94,.025)}
+.company-name{font-weight:800;color:#172544}
+.company-url{font-size:.77rem;color:#8290a8;overflow-wrap:anywhere;margin-top:.18rem}
+.status{display:inline-block;border-radius:999px;padding:.28rem .62rem;background:#e9f8f4;color:#148269;font-size:.7rem;font-weight:800;letter-spacing:.01em}
 .small-muted{font-size:.78rem;color:#7b879d}
-@media(max-width:750px){.brand-name{font-size:1.8rem}.header-pill{display:none}}
+
+/* Streamlit inputs */
+label, [data-testid="stWidgetLabel"]{color:#34435f!important;font-weight:700!important}
+div[data-baseweb="input"]>div,div[data-baseweb="textarea"]>div,div[data-baseweb="select"]>div{border-color:#dce4f0!important;border-radius:11px!important;background:#fff!important}
+div[data-baseweb="input"]>div:focus-within,div[data-baseweb="textarea"]>div:focus-within,div[data-baseweb="select"]>div:focus-within{border-color:#7290ff!important;box-shadow:0 0 0 3px rgba(71,118,255,.1)!important}
+div[data-testid="stFileUploader"]{background:#f8faff;border:1px dashed #c8d5ed;border-radius:14px;padding:.55rem}
+
+/* Buttons */
+div.stButton>button,div.stFormSubmitButton>button,div[data-testid="stDownloadButton"]>button{border-radius:11px;font-weight:800;min-height:2.55rem;border:1px solid #dbe4f3;background:#fff;color:#2b3b5b;transition:all .15s ease;box-shadow:0 2px 4px rgba(28,48,86,.025)}
+div.stButton>button:hover,div.stFormSubmitButton>button:hover,div[data-testid="stDownloadButton"]>button:hover{border-color:#a9bbf8;color:#335ce0;transform:translateY(-1px);box-shadow:0 6px 14px rgba(43,75,150,.09)}
+div.stButton>button[kind="primary"],div.stFormSubmitButton>button[kind="primary"]{background:linear-gradient(110deg,#3769ef,#6c62ff);border:0;color:#fff;box-shadow:0 6px 15px rgba(70,100,235,.19)}
+div.stButton>button[kind="primary"]:hover,div.stFormSubmitButton>button[kind="primary"]:hover{color:#fff;box-shadow:0 8px 18px rgba(70,100,235,.26)}
+
+/* Tables, expanders, alerts, progress */
+[data-testid="stDataFrame"]{border:1px solid #e1e8f3;border-radius:14px;overflow:hidden;background:#fff}
+[data-testid="stTable"]{border-radius:12px;overflow:hidden}
+div[data-testid="stProgress"]>div>div{background:linear-gradient(90deg,#31d4c5,#4776ff,#8764ff)}
+details[data-testid="stExpander"]{border:1px solid #e0e7f2;border-radius:16px;background:rgba(255,255,255,.76);overflow:hidden}
+details[data-testid="stExpander"] summary{font-weight:800;color:#1d2b49}
+div[data-testid="stAlert"]{border-radius:13px}
+hr{border-color:#e3e9f3}
+[data-testid="stCaptionContainer"]{color:#8290a6}
+
+@media(max-width:900px){.block-container{padding-left:1rem;padding-right:1rem}.brand{padding:22px;gap:13px}.header-pill{display:none}.metric-value{font-size:1.55rem}}
+@media(max-width:600px){.brand{align-items:flex-start;padding:19px;border-radius:19px}.brand-icon{width:47px;height:47px;flex-basis:47px;border-radius:14px;font-size:26px}.brand-name{font-size:1.8rem}.brand-sub{font-size:.8rem}.section-intro{align-items:flex-start}.overview-chip{display:none}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -209,10 +249,19 @@ if "company_status" not in st.session_state:
 
 # Header
 st.markdown(
-    '<div class="brand"><div class="brand-icon">◎</div><div>'
+    '<div class="brand"><div class="brand-icon">⌁</div><div class="brand-copy">'
+    '<div class="brand-kicker">HIRING INTELLIGENCE WORKSPACE</div>'
     '<div class="brand-name"><span>Role</span>Radar</div>'
-    '<div class="brand-sub">A simple view of hiring activity across your target companies.</div></div>'
-    '<div style="flex:1"></div><div class="header-pill">🎯 &nbsp; Company hiring dashboard</div></div>',
+    '<div class="brand-sub">Track career pages. Discover roles. Verify opportunities.</div></div>'
+    '<div style="flex:1"></div><div class="header-pill">JOB DISCOVERY WORKSPACE</div></div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="section-intro"><div><div class="section-eyebrow">WORKSPACE OVERVIEW</div>'
+    '<div class="section-heading">Hiring activity, at a glance</div>'
+    '<div class="section-description">Your watchlist, detected job postings, and recent hiring activity.</div></div>'
+    '<div class="overview-chip"><span class="overview-dot"></span> Results overview</div></div>',
     unsafe_allow_html=True,
 )
 
@@ -228,7 +277,7 @@ if not data.empty and "date_posted" in data.columns:
     dates = pd.to_datetime(data["date_posted"], errors="coerce", utc=True)
     recent_count = int((dates >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=30)).sum())
 
-# Simple dashboard: four numbers, company list and per-company scan buttons, and roles.
+# Snapshot metrics, company watchlist, role distribution, and searchable job records.
 metrics = st.columns(4, gap="medium")
 with metrics[0]:
     card("▦", f"{company_count:,}", "Companies", "Configured")
