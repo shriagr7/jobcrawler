@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import io
 import json
+from html import escape
 import os
 import re
 import subprocess
 import sys
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -18,6 +21,9 @@ ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "config.json"
 CSV = ROOT / "job_requirements.csv"
 AGENT = ROOT / "agent.py"
+SCAN_WORKER = ROOT / "scan_worker.py"
+SCAN_STATE = ROOT / ".roleradar_scan_state.json"
+SCAN_DIR = ROOT / ".roleradar_runs"
 
 st.set_page_config(
     page_title="RoleRadar",
@@ -139,6 +145,38 @@ div.stButton>button[kind="primary"]:hover,div.stFormSubmitButton>button[kind="pr
 [data-testid="stTable"]{border-radius:12px;overflow:hidden}
 [data-testid="stDataFrame"] [role="columnheader"]{font-weight:800!important}
 div[data-testid="stProgress"]>div>div{background:linear-gradient(90deg,#70e0c9,#657df3)}
+/* Premium live scan progress */
+.scan-progress-card{position:relative;overflow:hidden;margin:.8rem 0 1.05rem;padding:1.15rem 1.2rem 1rem;border:1px solid #dfe7f5;border-radius:19px;background:linear-gradient(130deg,#fff 0%,#f8faff 54%,#f0fbf9 100%);box-shadow:0 12px 30px #263c720c}
+.scan-progress-card:before{content:"";position:absolute;width:230px;height:230px;right:-92px;top:-148px;border-radius:50%;background:radial-gradient(circle,#95a5ff2c 0%,transparent 70%);pointer-events:none}
+.scan-progress-head{position:relative;display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:.95rem}
+.scan-progress-kicker{display:flex;align-items:center;gap:8px;color:#7888a5;font-size:.64rem;font-weight:800;letter-spacing:.13em;text-transform:uppercase;margin-bottom:.35rem}
+.scan-live-dot{width:8px;height:8px;border-radius:50%;background:#35c49c;box-shadow:0 0 0 4px #35c49c1c;display:inline-block;flex:none}.scan-live-dot.is-complete{background:#16866f;box-shadow:0 0 0 4px #16866f1c}.scan-live-dot.is-failed{background:#d55858;box-shadow:0 0 0 4px #d558581c}
+.scan-progress-title{font:800 1.08rem Manrope,sans-serif;color:#1a2947;letter-spacing:-.035em;line-height:1.35}
+.scan-progress-subtitle{color:#7b89a1;font-size:.76rem;line-height:1.5;margin-top:.25rem;max-width:650px;overflow-wrap:anywhere}
+.scan-progress-percent{position:relative;flex:none;min-width:76px;text-align:right;color:#354ac8;font:800 1.65rem/1 Manrope,sans-serif;letter-spacing:-.07em}
+.scan-progress-percent small{display:block;margin-top:.35rem;color:#8794aa;font:800 .58rem 'DM Sans',sans-serif;letter-spacing:.12em;text-transform:uppercase}
+.scan-progress-track{position:relative;height:13px;border-radius:999px;background:#e7edf7;border:1px solid #e0e7f2;overflow:hidden;box-shadow:inset 0 2px 4px #182b4c0c}
+.scan-progress-fill{position:relative;height:100%;min-width:0;border-radius:999px;background:linear-gradient(90deg,#4f67e8 0%,#8074f6 48%,#5fdbc2 100%);box-shadow:0 2px 9px #576ce64a;transition:width .65s cubic-bezier(.2,.7,.2,1)}
+.scan-progress-fill.is-active:after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(100deg,transparent 20%,#ffffffa3 48%,transparent 74%);animation:scanShimmer 1.8s ease-in-out infinite}
+@keyframes scanShimmer{to{transform:translateX(100%)}}
+.scan-progress-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:.95rem}
+.scan-stat{min-width:0;padding:.65rem .75rem;border:1px solid #e6ecf5;border-radius:12px;background:#ffffffbd}
+.scan-stat-label{color:#8190a8;font-size:.62rem;font-weight:800;letter-spacing:.07em;text-transform:uppercase}
+.scan-stat-value{margin-top:.18rem;color:#253653;font:800 1rem Manrope,sans-serif;letter-spacing:-.025em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scan-progress-stages{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:1rem}
+.scan-stage{display:flex;align-items:center;gap:7px;min-width:0;padding:.5rem .58rem;border:1px solid #e8edf5;border-radius:10px;background:#f9faff;color:#9aa6b8;font-size:.65rem;font-weight:700}
+.scan-stage-number{width:20px;height:20px;flex:none;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#e9eef6;color:#8593a8;font-size:.65rem;font-weight:800}
+.scan-stage.is-done{border-color:#cdeee4;background:#f2fcf8;color:#287e6d}
+.scan-stage.is-done .scan-stage-number{background:#c9f4e7;color:#167e68}
+.scan-stage.is-current{border-color:#cdd7ff;background:#f3f5ff;color:#455bd0;box-shadow:inset 0 0 0 1px #e7eaff}
+.scan-stage.is-current .scan-stage-number{background:linear-gradient(135deg,#657cf0,#8274f3);color:#fff;box-shadow:0 3px 8px #657cf038}
+.scan-progress-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:.75rem;color:#8491a7;font-size:.68rem;line-height:1.45}
+.scan-progress-status{display:inline-flex;align-items:center;gap:6px;color:#4961d6;font-weight:800}
+.scan-progress-status.is-complete{color:#16866f}
+.scan-progress-status.is-failed{color:#bf4545}
+.scan-progress-status .mini-dot{height:6px;width:6px;border-radius:50%;background:currentColor;display:inline-block}
+@media(max-width:760px){.scan-progress-card{padding:.95rem;border-radius:15px}.scan-progress-head{gap:10px}.scan-progress-percent{font-size:1.35rem;min-width:58px}.scan-progress-title{font-size:.98rem}.scan-progress-stats{gap:6px}.scan-stat{padding:.55rem}.scan-stat-value{font-size:.88rem}.scan-progress-stages{grid-template-columns:repeat(2,minmax(0,1fr))}.scan-stage{font-size:.63rem}.scan-progress-foot{align-items:flex-start;flex-direction:column}}
+@media(prefers-reduced-motion:reduce){.scan-progress-fill,.scan-progress-fill:after{animation:none!important;transition:none!important}}
 details[data-testid="stExpander"]{border:1px solid #e2e8f1;border-radius:14px;background:#fff;overflow:hidden}
 details[data-testid="stExpander"] summary{font-weight:800;color:#263652;padding:.45rem .3rem}
 div[data-testid="stAlert"]{border-radius:12px}
@@ -232,6 +270,58 @@ def save_companies(companies: list[dict]) -> None:
     save_config(cfg)
 
 
+def filter_open_records(frame: pd.DataFrame) -> pd.DataFrame:
+    """Strictly limit dashboard data to positively indicated open job postings."""
+    if frame.empty or "job_status" not in frame.columns:
+        return frame.iloc[0:0].copy()
+    open_values = {"likely open", "open", "active", "currently open"}
+    mask = frame["job_status"].fillna("").astype(str).str.strip().str.lower().isin(open_values)
+    return frame.loc[mask].copy().reset_index(drop=True)
+
+
+def read_scan_state() -> dict:
+    try:
+        state = json.loads(SCAN_STATE.read_text(encoding="utf-8"))
+        return state if isinstance(state, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_scan_state(state: dict) -> None:
+    SCAN_STATE.parent.mkdir(parents=True, exist_ok=True)
+    temp = SCAN_STATE.with_name(f".{SCAN_STATE.name}.{os.getpid()}.tmp")
+    temp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    temp.replace(SCAN_STATE)
+
+
+def pid_is_alive(pid: object) -> bool:
+    try:
+        process_id = int(pid)
+        if process_id <= 0:
+            return False
+        os.kill(process_id, 0)
+        # A dead detached child can remain as a zombie until the parent reaps it.
+        proc_stat = Path(f"/proc/{process_id}/stat")
+        if proc_stat.exists():
+            fields = proc_stat.read_text(encoding="utf-8").split()
+            if len(fields) > 2 and fields[2] == "Z":
+                return False
+        return True
+    except (TypeError, ValueError, OSError):
+        return False
+
+
+def current_scan_state() -> dict:
+    state = read_scan_state()
+    if state.get("status") == "running" and not pid_is_alive(state.get("worker_pid")):
+        # Do not leave the dashboard in a permanent loading state if Render restarted.
+        state["status"] = "failed"
+        state["message"] = "The background worker stopped before reporting completion (possibly due to a service restart)."
+        state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        write_scan_state(state)
+    return state
+
+
 def load_results() -> tuple[pd.DataFrame, str | None]:
     url = db_url()
     if url:
@@ -240,7 +330,7 @@ def load_results() -> tuple[pd.DataFrame, str | None]:
             engine = create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
             with engine.connect() as conn:
                 df = pd.read_sql(sql_text("SELECT * FROM job_postings"), conn)
-            return df.fillna(""), None
+            return filter_open_records(df.fillna("")), None
         except Exception as exc:
             return pd.DataFrame(), str(exc)
         finally:
@@ -248,7 +338,7 @@ def load_results() -> tuple[pd.DataFrame, str | None]:
                 engine.dispose()
     if CSV.exists():
         try:
-            return pd.read_csv(CSV).fillna(""), None
+            return filter_open_records(pd.read_csv(CSV).fillna("")), None
         except Exception as exc:
             return pd.DataFrame(), str(exc)
     return pd.DataFrame(), None
@@ -321,16 +411,67 @@ def start_scan(companies: list[dict], mode: str) -> None:
     if not db_url():
         st.error("DATABASE_URL is not configured in Render → Environment.")
         return
-    if not AGENT.exists():
-        st.error("agent.py must be in the same GitHub repository folder as streamlit_app.py.")
+    if not AGENT.exists() or not SCAN_WORKER.exists():
+        st.error("agent.py and scan_worker.py must be in the same repository folder as streamlit_app.py.")
         return
+
+    existing = current_scan_state()
+    if existing.get("status") in {"running", "starting"}:
+        st.warning("A scan is already running in the background. Follow its progress in the Scan monitor below.")
+        return
+
+    SCAN_DIR.mkdir(parents=True, exist_ok=True)
+    scan_id = uuid.uuid4().hex[:12]
+    selected_companies = normalize_company_rows(companies)
     cfg = load_config()
-    cfg["companies"] = normalize_company_rows(companies)
-    cfg["max_pages_per_domain"] = int(cfg.get("max_pages_per_domain", 80))
-    cfg["request_delay_seconds"] = float(cfg.get("request_delay_seconds", 2))
-    save_config(cfg)
-    st.session_state["pending_scan"] = {"mode": mode, "companies": cfg["companies"]}
-    st.rerun()
+    cfg["companies"] = selected_companies
+    # Do not overwrite the shared config or the full watchlist for a targeted scan.
+    cfg_path = SCAN_DIR / f"config_{scan_id}.json"
+    cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    log_path = SCAN_DIR / f"scan_{scan_id}.log"
+    log_path.write_text("Starting background worker…\n", encoding="utf-8")
+    state = {
+        "scan_id": scan_id,
+        "status": "starting",
+        "mode": mode,
+        "companies": [c["name"] for c in selected_companies],
+        "company_count": len(selected_companies),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "config_path": str(cfg_path),
+        "log_path": str(log_path),
+        "worker_pid": None,
+        "message": "Background scan started.",
+    }
+    write_scan_state(state)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    if db_url():
+        env["DATABASE_URL"] = db_url()
+    if mode == "30_days":
+        env["SCAN_POSTED_WITHIN_DAYS"] = "30"
+    else:
+        env.pop("SCAN_POSTED_WITHIN_DAYS", None)
+
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(SCAN_WORKER), "--scan-id", scan_id,
+             "--config", str(cfg_path), "--state", str(SCAN_STATE), "--log", str(log_path)],
+            cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+        )
+        latest_state = read_scan_state()
+        latest_state["worker_pid"] = proc.pid
+        latest_state["status"] = "running"
+        write_scan_state(latest_state)
+        st.session_state["last_started_scan_id"] = scan_id
+        st.success("Scan started in the background. You can navigate the dashboard while it runs.")
+        st.rerun()
+    except Exception as exc:
+        state["status"] = "failed"
+        state["message"] = f"Could not start worker: {type(exc).__name__}: {exc}"
+        state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        write_scan_state(state)
+        st.error(state["message"])
 
 
 # Persist configured companies in session and config.
@@ -392,7 +533,7 @@ page = st.sidebar.radio(
 )
 st.sidebar.markdown("---")
 st.sidebar.markdown('<div class="sidebar-label">Quick scan</div>', unsafe_allow_html=True)
-st.sidebar.caption("Refresh job pages across your watchlist.")
+st.sidebar.caption("Discover active roles from official careers pages only.")
 if st.sidebar.button("Scan all companies", type="primary", use_container_width=True, key="sidebar_scan_all"):
     start_scan(st.session_state.companies, "all")
 st.sidebar.markdown(
@@ -403,11 +544,11 @@ st.sidebar.markdown(
 )
 
 page_copy = {
-    "Overview": ("Your hiring landscape", "A clear snapshot of tracked companies, detected roles, and the latest hiring signals."),
-    "Job board": ("Explore job postings", "Search, filter, verify, and export roles discovered across your company watchlist."),
-    "Companies": ("Manage your watchlist", "Add career pages, configure trusted ATS domains, and run targeted scans."),
-    "Analytics": ("Hiring intelligence", "Understand which roles and companies account for the most detected openings."),
-    "Settings & data": ("Workspace settings", "Review crawler configuration, database status, scan logs, and saved result data."),
+    "Overview": ("Your hiring landscape", "A clear snapshot of tracked companies and open roles discovered from official careers pages."),
+    "Job board": ("Open positions", "Search and export active job postings discovered from official careers pages and approved ATS listings."),
+    "Companies": ("Manage your watchlist", "Add official careers or open-positions pages, configure trusted ATS domains, and run scans."),
+    "Analytics": ("Hiring intelligence", "Understand which active roles and companies account for the most open positions."),
+    "Settings & data": ("Workspace settings", "Review the background worker, crawler scope, database status, and recent scan logs."),
 }
 page_title, page_description = page_copy[page]
 st.markdown(
@@ -415,7 +556,7 @@ st.markdown(
     '<span>COMPANY CAREER MONITORING</span></div>'
     f'<div class="page-heading"><div class="page-heading-copy"><div class="eyebrow">{page.upper()} · WORKSPACE</div>'
     f'<h1 class="page-title">{page_title}</h1><p class="page-description">{page_description}</p></div>'
-    '<div class="workspace-pill"><span class="pill-dot"></span> Workspace ready</div></div>',
+    '<div class="workspace-pill"><span class="pill-dot"></span> Open positions only</div></div>',
     unsafe_allow_html=True,
 )
 
@@ -444,12 +585,8 @@ def job_frame(source: pd.DataFrame, default_status: bool = True) -> pd.DataFrame
 
 def filter_job_frame(frame: pd.DataFrame, status: str, company: str, query: str, location: str = "All locations") -> pd.DataFrame:
     filtered = frame.copy()
-    if "job_status" not in filtered.columns:
-        filtered["job_status"] = "Needs verification"
-    if status == "Potentially open":
-        filtered = filtered[filtered["job_status"].isin(["Likely open", "Needs verification"])]
-    elif status != "All statuses":
-        filtered = filtered[filtered["job_status"].astype(str) == status]
+    # The entire workspace is intentionally limited to active/open postings.
+    filtered = filter_open_records(filtered)
     if company != "All companies" and "company" in filtered.columns:
         filtered = filtered[filtered["company"].astype(str) == company]
     if location != "All locations" and "location_mention" in filtered.columns:
@@ -488,6 +625,164 @@ def render_jobs_table(frame: pd.DataFrame, height: int = 440) -> None:
     st.dataframe(frame[display_cols], use_container_width=True, hide_index=True, height=height, column_config=column_config)
 
 
+# Render the monitor near the top of the page. Auto-poll only while a scan is running.
+def render_scan_monitor_content(state: dict) -> None:
+    if not state:
+        return
+    status = str(state.get("status", "idle"))
+    scan_id = str(state.get("scan_id", ""))
+    log_path = Path(str(state.get("log_path", ""))) if state.get("log_path") else None
+    try:
+        log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path and log_path.exists() else ""
+    except OSError:
+        log_text = ""
+    lines = log_text.splitlines()
+    total_companies = max(1, int(state.get("company_count", 1) or 1))
+    completed_companies = sum(1 for line in lines if line.startswith("Company summary:"))
+    company_headers = [line[4:-4].strip() for line in lines if line.startswith("=== ") and line.endswith(" ===")]
+    current_company = company_headers[-1] if company_headers else "Preparing scan"
+    visited_matches = re.findall(r"Visited\s+(\d+)/(\d+)", log_text)
+    current_visited = int(visited_matches[-1][0]) if visited_matches else 0
+    page_limit_matches = re.findall(r"page limit:\s*(\d+)", log_text)
+    page_limit = max(1, int(page_limit_matches[-1])) if page_limit_matches else 20
+    within_company = min(0.88, current_visited / max(5, min(page_limit, 20)) * 0.88)
+    fraction = min(0.99, (completed_companies + (within_company if status in {"running", "starting"} else 0)) / total_companies)
+    role_urls = set(re.findall(r"(?:JOB FOUND|JOB CARD FOUND) \[Likely open\]:.*?\|\s*(https?://\S+)", log_text))
+    roles_found = len(role_urls)
+    saving = "Saving verified open positions to PostgreSQL" in log_text
+
+    heading_col, status_col = st.columns([1.3, .7], vertical_alignment="center")
+    with heading_col:
+        st.markdown('<div class="section-title">Background scan monitor</div><div class="section-subtitle">The scan runs in a separate background process while you use the dashboard.</div>', unsafe_allow_html=True)
+    with status_col:
+        if status in {"running", "starting"}:
+            st.info("Running · live updates")
+        elif status == "completed":
+            st.success("Completed")
+        elif status == "failed":
+            st.error("Failed")
+        else:
+            st.caption(status.title())
+
+    # Attractive custom progress panel: animated gradient, percentage, scan counters,
+    # and stage indicators. It refreshes with the existing two-second Streamlit fragment.
+    if status == "completed":
+        percent = 100
+        stage_index = 3
+        progress_title = "Scan complete — open positions are ready"
+        progress_note = "All configured companies have been processed. Review the open-positions board for saved results."
+        progress_status_text = "Complete"
+        current_company_label = "All companies processed"
+    elif status == "failed":
+        percent = int(max(0, min(99, round(fraction * 100))))
+        if saving:
+            stage_index = 3
+        elif roles_found > 0:
+            stage_index = 2
+        elif current_visited > 0:
+            stage_index = 1
+        else:
+            stage_index = 0
+        progress_title = "Scan stopped before completion"
+        progress_note = str(state.get("message", "Open the scan log below for the failure reason."))
+        progress_status_text = "Failed"
+        current_company_label = current_company
+    else:
+        percent = 99 if saving else int(max(0, min(99, round(fraction * 100))))
+        if saving:
+            stage_index = 3
+            progress_title = "Saving and deduplicating open positions"
+            progress_note = "The crawler has finished discovery and is writing verified results to PostgreSQL."
+        elif roles_found > 0:
+            stage_index = 2
+            progress_title = "Checking job postings for open status"
+            progress_note = "Potential role links have been found. RoleRadar is filtering for postings with positive open-position signals."
+        elif current_visited > 0:
+            stage_index = 1
+            progress_title = "Discovering roles on careers pages"
+            progress_note = "Scanning job listings and pagination only; unrelated company pages are excluded."
+        else:
+            stage_index = 0
+            progress_title = "Connecting to company careers pages"
+            progress_note = "Starting the crawler and preparing the careers-page queue. Progress updates automatically."
+        progress_status_text = "Live scan"
+        current_company_label = current_company
+
+    stages = ["Open careers pages", "Discover job roles", "Verify open status", "Save results"]
+    stage_bits = []
+    for idx, stage_name in enumerate(stages):
+        stage_cls = "is-done" if status == "completed" or idx < stage_index else ("is-current" if idx == stage_index else "")
+        marker = "✓" if stage_cls == "is-done" else str(idx + 1)
+        stage_bits.append(
+            f'<div class="scan-stage {stage_cls}"><span class="scan-stage-number">{marker}</span>'
+            f'<span>{escape(stage_name)}</span></div>'
+        )
+
+    status_dot_class = "is-complete" if status == "completed" else ("is-failed" if status == "failed" else "")
+    animation_class = "is-active" if status in {"running", "starting"} else ""
+    safe_company = escape(str(current_company_label))
+    safe_title = escape(progress_title)
+    safe_note = escape(progress_note)
+    progress_html = f'''<div class="scan-progress-card">
+      <div class="scan-progress-head">
+        <div>
+          <div class="scan-progress-kicker"><span class="scan-live-dot {status_dot_class}"></span> RoleRadar scan progress</div>
+          <div class="scan-progress-title">{safe_title}</div>
+          <div class="scan-progress-subtitle">{safe_note}</div>
+        </div>
+        <div class="scan-progress-percent">{percent}%<small>progress</small></div>
+      </div>
+      <div class="scan-progress-track" role="progressbar" aria-valuenow="{percent}" aria-valuemin="0" aria-valuemax="100" aria-label="Scan progress">
+        <div class="scan-progress-fill {animation_class}" style="width:{percent}%"></div>
+      </div>
+      <div class="scan-progress-stats">
+        <div class="scan-stat"><div class="scan-stat-label">Companies</div><div class="scan-stat-value">{min(completed_companies, total_companies)} / {total_companies}</div></div>
+        <div class="scan-stat"><div class="scan-stat-label">Pages checked</div><div class="scan-stat-value">{current_visited:,}</div></div>
+        <div class="scan-stat"><div class="scan-stat-label">Open-role links</div><div class="scan-stat-value">{roles_found:,}</div></div>
+      </div>
+      <div class="scan-progress-stages">{''.join(stage_bits)}</div>
+      <div class="scan-progress-foot">
+        <span>Current company: <strong>{safe_company}</strong></span>
+        <span class="scan-progress-status {status_dot_class}"><span class="mini-dot"></span>{escape(progress_status_text)}</span>
+      </div>
+    </div>'''
+    st.markdown(progress_html, unsafe_allow_html=True)
+
+    if status == "completed":
+        st.caption(f"{roles_found} unique open-role links appeared in the scan log. The job board displays only saved open positions.")
+        st.caption(f"Finished at {state.get('finished_at', 'unknown time')}")
+    elif status == "failed":
+        st.error(state.get("message", "Check the scan log for the failure reason."))
+
+    with st.expander("Live scan log", expanded=(status in {"running", "starting"})):
+        if lines:
+            st.code("\n".join(lines[-35:]), language="text")
+        else:
+            st.caption("Waiting for the crawler to write its first log entries…")
+
+    if status in {"completed", "failed"} and scan_id and st.session_state.get("_scan_completion_seen") != scan_id:
+        st.session_state["_scan_completion_seen"] = scan_id
+        st.rerun()
+
+
+@st.fragment(run_every="2s")
+def render_running_scan_monitor() -> None:
+    # Re-read the worker state and tail file on each small fragment refresh.
+    render_scan_monitor_content(current_scan_state())
+
+
+def render_scan_monitor() -> None:
+    state = current_scan_state()
+    if not state:
+        return
+    if state.get("status") in {"running", "starting"}:
+        render_running_scan_monitor()
+    else:
+        render_scan_monitor_content(state)
+
+
+render_scan_monitor()
+
 if page == "Overview":
     st.markdown(
         f'<section class="hero-panel">'
@@ -509,8 +804,8 @@ if page == "Overview":
     st.markdown(
         '<div class="metric-grid">'
         + render_metric("⌂", "Companies monitored", company_count, "In your current watchlist")
-        + render_metric("▤", "Job postings found", job_count, "Saved across all scans")
-        + render_metric("✓", "Likely open", likely_open_count, "Verify on the employer site")
+        + render_metric("▤", "Open positions found", job_count, "Saved active postings only")
+        + render_metric("✓", "Open positions", likely_open_count, "Positive open signals only")
         + render_metric("◷", "Posted in 30 days", recent_count, "Based on publication dates")
         + '</div>',
         unsafe_allow_html=True,
@@ -538,7 +833,7 @@ if page == "Overview":
                 by_company["company"] = by_company["company"].replace("", "Unknown company")
                 st.dataframe(by_company, use_container_width=True, hide_index=True, height=300)
 
-    st.markdown('<div class="section-head" style="margin-top:1.45rem"><div><div class="section-title">Latest discovered jobs</div><div class="section-subtitle">The newest records in the saved results set.</div></div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-head" style="margin-top:1.45rem"><div><div class="section-title">Latest discovered jobs</div><div class="section-subtitle">The most recently discovered open roles.</div></div></div>', unsafe_allow_html=True)
     if data.empty:
         st.markdown('<div class="empty-state"><div class="empty-state-title">No jobs discovered yet</div>Add companies to your watchlist and run your first scan.</div>', unsafe_allow_html=True)
         st.button("Go to company watchlist", type="primary", on_click=navigate_to, args=("Companies",))
@@ -563,17 +858,15 @@ if page == "Overview":
 
 elif page == "Job board":
     st.markdown('<div class="metric-grid">'
-                + render_metric("▤", "Stored postings", job_count, "All saved records")
-                + render_metric("✓", "Likely open", likely_open_count, "Best-effort status")
+                + render_metric("▤", "Open positions", job_count, "Active postings only")
+                + render_metric("✓", "Open status", likely_open_count, "Positive open signals only")
                 + render_metric("✦", "Unique roles", role_count, "Distinct job titles")
                 + render_metric("◷", "Recent", recent_count, "Posted within 30 days")
                 + '</div>', unsafe_allow_html=True)
     with st.container(border=True):
-        st.markdown('<div class="section-head"><div><div class="section-title">Job posting directory</div><div class="section-subtitle">Use the filters to narrow the results. Open the source page to verify application availability.</div></div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-head"><div><div class="section-title">Open position directory</div><div class="section-subtitle">Search active roles by company, title, skills, or location. Closed and unverified roles are excluded.</div></div></div>', unsafe_allow_html=True)
         view = job_frame(data)
-        status_options = ["Potentially open", "All statuses", "Likely open", "Needs verification"]
-        if "job_status" in view.columns:
-            status_options += sorted(s for s in view["job_status"].dropna().astype(str).unique().tolist() if s not in status_options)
+        status_options = ["Open positions only"]
         companies_options = ["All companies"]
         if "company" in view.columns:
             companies_options += sorted(c for c in view["company"].dropna().astype(str).unique().tolist() if c.strip())
@@ -582,7 +875,7 @@ elif page == "Job board":
             locations_options += sorted(c for c in view["location_mention"].dropna().astype(str).unique().tolist() if c.strip())
         f1, f2, f3 = st.columns([1, 1, 1.5], gap="medium")
         with f1:
-            chosen_status = st.selectbox("Job status", status_options, key="job_status_filter", index=0)
+            chosen_status = st.selectbox("Result scope", status_options, key="job_status_filter", index=0)
         with f2:
             chosen_company = st.selectbox("Company", companies_options, key="job_company_filter")
         with f3:
@@ -591,7 +884,7 @@ elif page == "Job board":
         with f4:
             chosen_location = st.selectbox("Location", locations_options, key="job_location_filter")
         with f5:
-            st.caption("Status labels are heuristic. When the page does not provide reliable availability information, verify the opening on the employer's site.")
+            st.caption("Only active-listing or application-enabled roles are retained. Open status is best-effort and should be verified on the employer’s source page.")
         filtered = filter_job_frame(view, chosen_status, chosen_company, search_query, chosen_location)
         st.markdown(f'<div class="panel-kicker">RESULTS &nbsp;·&nbsp; {len(filtered):,} MATCHING RECORDS</div>', unsafe_allow_html=True)
         render_jobs_table(filtered, height=490)
@@ -611,7 +904,7 @@ elif page == "Companies":
             st.markdown('<div class="section-head"><div><div class="section-title">Add a company</div><div class="section-subtitle">Start with the official careers page. Add ATS hosts only when trusted.</div></div></div>', unsafe_allow_html=True)
             with st.form("add_company_form", clear_on_submit=True):
                 new_name = st.text_input("Company name", placeholder="e.g. Microsoft")
-                new_url = st.text_input("Careers page URL", placeholder="https://careers.company.com/")
+                new_url = st.text_input("Careers page URL", placeholder="https://company.com/careers or /open-positions")
                 extra_domains = st.text_input("Additional allowed domains (optional)", placeholder="boards.greenhouse.io, jobs.lever.co", help="Only add trusted ATS hosts that this company's career page links to. The career-page domain is included automatically.")
                 add_clicked = st.form_submit_button("Add to watchlist", type="primary", use_container_width=True)
             if add_clicked:
@@ -650,12 +943,19 @@ elif page == "Companies":
         with st.container(border=True):
             head_l, head_r = st.columns([1.4, .6], vertical_alignment="center")
             with head_l:
-                st.markdown('<div class="section-title">Your watchlist</div><div class="section-subtitle">Career pages configured for scanning.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-title">Your watchlist</div><div class="section-subtitle">Official careers and open-positions pages configured for scanning.</div>', unsafe_allow_html=True)
             with head_r:
                 st.markdown(f'<div style="text-align:right;font:800 1.65rem Manrope;color:#25395c">{company_count:,}<div style="font:600 .7rem DM Sans;color:#8592a7">companies</div></div>', unsafe_allow_html=True)
             if st.session_state.companies:
+                active_scan_state = current_scan_state()
+                active_scan_companies = set(active_scan_state.get("companies", []))
                 for i, company in enumerate(st.session_state.companies):
-                    status = st.session_state.company_status.get(company["name"], "Ready")
+                    if active_scan_state.get("status") in {"running", "starting"} and company["name"] in active_scan_companies:
+                        status = "Scanning"
+                    elif active_scan_state.get("status") == "completed" and company["name"] in active_scan_companies:
+                        status = "Scanned"
+                    else:
+                        status = st.session_state.company_status.get(company["name"], "Ready")
                     with st.container(border=True):
                         name_col, status_col = st.columns([3, 1], vertical_alignment="center")
                         with name_col:
@@ -689,10 +989,10 @@ elif page == "Companies":
 
 elif page == "Analytics":
     st.markdown('<div class="metric-grid">'
-                + render_metric("▤", "Job postings", job_count, "All stored records")
+                + render_metric("▤", "Open positions", job_count, "Active postings only")
                 + render_metric("✦", "Unique roles", role_count, "Distinct titles")
                 + render_metric("⌂", "Companies monitored", company_count, "Configured watchlist")
-                + render_metric("✓", "Likely open", likely_open_count, "Best-effort classification")
+                + render_metric("✓", "Open positions", likely_open_count, "Active postings only")
                 + '</div>', unsafe_allow_html=True)
     if data.empty:
         st.markdown('<div class="empty-state"><div class="empty-state-title">Analytics will appear after your first scan</div>Once roles have been collected, use this page to compare job families, company activity, and locations.</div>', unsafe_allow_html=True)
@@ -727,12 +1027,15 @@ elif page == "Analytics":
                     st.info("Location data is not available in the current results.")
         with status_col:
             with st.container(border=True):
-                st.markdown('<div class="section-title">Status breakdown</div><div class="section-subtitle">Understand how much verification your results need.</div>', unsafe_allow_html=True)
-                if "job_status" in data.columns:
-                    status_counts = data["job_status"].astype(str).replace("", "Needs verification").value_counts()
-                    st.bar_chart(status_counts.rename_axis("Status").to_frame("Postings"), height=300, use_container_width=True)
+                st.markdown('<div class="section-title">Open roles by employment type</div><div class="section-subtitle">Break down active roles by the employment arrangement detected in the posting.</div>', unsafe_allow_html=True)
+                if "employment_type_mention" in data.columns:
+                    types = data["employment_type_mention"].astype(str).str.strip().replace("", pd.NA).dropna().value_counts().head(10)
+                    if not types.empty:
+                        st.bar_chart(types.rename_axis("Employment type").to_frame("Open roles"), height=300, use_container_width=True)
+                    else:
+                        st.info("Employment type was not specified in the open postings collected so far.")
                 else:
-                    st.info("This dataset predates status tracking; postings need verification.")
+                    st.info("Employment type information is not available in the current results.")
 
 
 elif page == "Settings & data":
@@ -763,11 +1066,17 @@ elif page == "Settings & data":
             st.write("**Job URL keywords:**", ", ".join(cfg.get("job_url_keywords", [])) or "Default keywords")
             st.write("**Exclude URL keywords:**", ", ".join(cfg.get("exclude_url_keywords", [])) or "Default exclusions")
     with st.container(border=True):
-        st.markdown('<div class="section-title">Recent scan log</div><div class="section-subtitle">The most recent output available in this browser session.</div>', unsafe_allow_html=True)
-        if st.session_state.scan_log:
-            st.code("\n".join(st.session_state.scan_log[-80:]), language="text")
+        st.markdown('<div class="section-title">Recent scan log</div><div class="section-subtitle">Persisted output from the latest background scan.</div>', unsafe_allow_html=True)
+        scan_state_for_log = current_scan_state()
+        scan_log_path = Path(str(scan_state_for_log.get("log_path", ""))) if scan_state_for_log.get("log_path") else None
+        try:
+            persisted_log = scan_log_path.read_text(encoding="utf-8", errors="replace").splitlines() if scan_log_path and scan_log_path.exists() else []
+        except OSError:
+            persisted_log = []
+        if persisted_log:
+            st.code("\n".join(persisted_log[-80:]), language="text")
         else:
-            st.caption("No scan log in this session yet. Run a scan from the sidebar or company watchlist.")
+            st.caption("No scan log yet. Start a background scan from the sidebar or company watchlist.")
     with st.expander("Data cleanup · Clear previous job results", expanded=False):
         st.markdown('<div class="section-title">Start with a clean results list</div>', unsafe_allow_html=True)
         st.warning("This permanently deletes all saved job-posting rows and local crawler CSV/XLSX exports. Your configured companies and crawler settings will be kept.")
@@ -788,102 +1097,3 @@ elif page == "Settings & data":
 if db_error and page != "Settings & data":
     st.warning("Could not load results from the database. Check DATABASE_URL and the job_postings table.")
 
-# Run queued scan, showing progress and logs on the same dashboard.
-pending = st.session_state.get("pending_scan")
-if pending:
-    st.session_state.pending_scan = None
-    st.markdown("---")
-    st.markdown("### Scan progress")
-    st.caption("This scan runs in the current app session. Keep this page open until it finishes.")
-    progress = st.progress(0, text="Starting scan…")
-    status_text = st.empty()
-    log_view = st.empty()
-    log_lines: list[str] = []
-    companies_to_scan = pending["companies"]
-    mode = pending["mode"]
-    started = time.time()
-    failed = False
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-    if db_url():
-        env["DATABASE_URL"] = db_url()
-    if mode == "30_days":
-        env["SCAN_POSTED_WITHIN_DAYS"] = "30"
-    else:
-        env.pop("SCAN_POSTED_WITHIN_DAYS", None)
-
-    try:
-        # agent.py reads config.json, so temporarily restrict it to the selected company list.
-        cfg = load_config()
-        original_companies = cfg.get("companies", [])
-        cfg["companies"] = normalize_company_rows(companies_to_scan)
-        save_config(cfg)
-        proc = subprocess.Popen(
-            [sys.executable, "-u", str(AGENT)],
-            cwd=str(ROOT),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        try:
-            while True:
-                line = proc.stdout.readline() if proc.stdout else ""
-                if line:
-                    line = line.rstrip()
-                    log_lines.append(line)
-                    st.session_state.scan_log = log_lines[-500:]
-                    m = re.search(r"Visited\s+(\d+)/(\d+)", line)
-                    if m:
-                        visited, total = int(m.group(1)), max(1, int(m.group(2)))
-                        progress.progress(min(95, max(5, int(visited / total * 90))),
-                                          text=f"Scanning pages · {visited}/{total}")
-                    else:
-                        progress.progress(min(90, max(5, int((time.time() - started) / 20 * 5))),
-                                          text="Scanning company career pages…")
-                    status_text.caption(f"Elapsed {int(time.time() - started)}s · {len(log_lines)} log lines")
-                    log_view.code("\n".join(log_lines[-20:]), language="text")
-                elif proc.poll() is not None:
-                    break
-                else:
-                    time.sleep(.1)
-                if time.time() - started > 1800:
-                    proc.kill()
-                    log_lines.append("Scan stopped after 30 minutes.")
-                    failed = True
-                    break
-            return_code = proc.wait()
-        finally:
-            # Restore the complete company list after this run.
-            cfg = load_config()
-            cfg["companies"] = normalize_company_rows(st.session_state.companies)
-            save_config(cfg)
-
-        if return_code == 0 and not failed:
-            st.session_state.scan_status = "Completed"
-            progress.progress(100, text="Scan completed")
-            st.success("Scan finished. Results have been refreshed below.")
-            refreshed, refreshed_error = load_results()
-            if refreshed_error:
-                st.warning("The scan ended, but results could not be read back from the database.")
-            else:
-                data = refreshed
-                st.rerun()
-        else:
-            st.session_state.scan_status = "Failed"
-            progress.progress(0, text="Scan failed — check the log")
-            st.error("Scan failed. Review the crawler log below.")
-        if log_lines:
-            log_view.code("\n".join(log_lines[-100:]), language="text")
-            st.session_state.scan_log = log_lines[-500:]
-    except Exception as exc:
-        # Restore the complete company list even if the subprocess could not start.
-        try:
-            cfg = load_config()
-            cfg["companies"] = normalize_company_rows(st.session_state.companies)
-            save_config(cfg)
-        except Exception:
-            pass
-        st.session_state.scan_status = "Failed to start"
-        st.error(f"Could not start agent.py: {exc}")
