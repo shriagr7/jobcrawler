@@ -598,6 +598,7 @@ def build_excel_export(frame: pd.DataFrame, sheet_name: str = "Open jobs") -> by
                     url_cell.hyperlink = url
                     url_cell.font = link_font
                     url_cell.alignment = Alignment(vertical="top", wrap_text=True)
+            # Keep long descriptions readable without making every row excessively tall.
             if desc_col:
                 description = str(ws.cell(row=row_idx, column=desc_col).value or "")
                 if description:
@@ -633,6 +634,7 @@ if "nav" not in st.session_state or st.session_state.get("nav") not in {"Overvie
     st.session_state["nav"] = "Overview"
 
 with st.sidebar:
+    # Inline the local SVG so the logo remains visible on Render and does not rely on a remote image host.
     try:
         logo_markup = LOGO_SVG.read_text(encoding="utf-8")
     except OSError:
@@ -652,6 +654,7 @@ data, results_error = load_results()
 if results_error:
     st.warning("Saved jobs could not be loaded right now. Please refresh or ask your app administrator for help.")
 
+# Keep scan progress visible wherever the user navigates.
 active_scan = current_scan_state()
 if active_scan:
     render_scan_monitor()
@@ -785,4 +788,133 @@ elif page == "Job dashboard":
         st.markdown("#### Openings by employment type")
         employment_chart = _clean_category_counts(dashboard_data, "employment_type_mention", "Employment type", 8)
         if not employment_chart.empty:
-            st.bar_chart(employment_chart.set_index("Employment type")[["Openings"]], height=300, use_container_width=True, horizontal
+            st.bar_chart(employment_chart.set_index("Employment type")[["Openings"]], height=300, use_container_width=True, horizontal=True)
+        else:
+            st.caption("Employment type details will appear when available.")
+
+    if not dashboard_data.empty:
+        download_csv_col, download_excel_col, _ = st.columns([1, 1, 2], gap="small")
+        with download_csv_col:
+            st.download_button(
+                "Download CSV",
+                data=export_columns(dashboard_data).to_csv(index=False).encode("utf-8-sig"),
+                file_name="roleradar_job_dashboard.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with download_excel_col:
+            st.download_button(
+                "Download Excel (.xlsx)",
+                data=build_excel_export(dashboard_data, "Job dashboard"),
+                file_name="roleradar_job_dashboard.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="download_dashboard_excel",
+            )
+    else:
+        st.markdown('<div class="empty"><strong>No matching job listings</strong>Run a scan or change the selected company or role filter.</div>', unsafe_allow_html=True)
+
+elif page == "Open jobs":
+    st.markdown('<div class="page-title">Open job listings</div><div class="page-subtitle">Search real roles and open the direct posting to review or apply.</div>', unsafe_allow_html=True)
+    search_col, company_col = st.columns([2.2, 1], gap="medium")
+    with search_col:
+        query = st.text_input("Search jobs", placeholder="Job title, company, skill, or location", key="jobs_query")
+    company_options = ["All companies"]
+    if not data.empty and "company" in data.columns:
+        company_options.extend(sorted(name for name in data["company"].dropna().astype(str).unique() if name.strip()))
+    with company_col:
+        chosen_company = st.selectbox("Company", company_options, key="jobs_company")
+    filtered = data.copy()
+    if chosen_company != "All companies" and "company" in filtered.columns:
+        filtered = filtered[filtered["company"].astype(str) == chosen_company]
+    if query.strip():
+        terms = [col for col in ["job_title", "company", "location_mention", "description", "employment_type_mention"] if col in filtered.columns]
+        matched = pd.Series(False, index=filtered.index)
+        for col in terms:
+            matched |= filtered[col].astype(str).str.contains(query.strip(), case=False, regex=False, na=False)
+        filtered = filtered[matched]
+    st.caption(f"{len(filtered):,} open job listing(s)")
+    out = export_columns(filtered)
+    download_csv_col, download_excel_col, _ = st.columns([1, 1, 2], gap="small")
+    with download_csv_col:
+        st.download_button(
+            "Download CSV",
+            data=out.to_csv(index=False).encode("utf-8-sig"),
+            file_name="roleradar_open_jobs.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with download_excel_col:
+        st.download_button(
+            "Download Excel (.xlsx)",
+            data=build_excel_export(filtered, "Open jobs"),
+            file_name="roleradar_open_jobs.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="download_open_jobs_excel",
+        )
+    render_job_cards(filtered)
+
+elif page == "Companies":
+    st.markdown('<div class="page-title">Companies</div><div class="page-subtitle">Choose the official careers or open-positions page for each company. RoleRadar will find the individual job postings from there.</div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown("### Add a company")
+        with st.form("add_company_form", clear_on_submit=True):
+            name = st.text_input("Company name", placeholder="e.g. Acme Insurance")
+            career_url = st.text_input("Careers or open positions URL", placeholder="https://company.com/careers")
+            submitted = st.form_submit_button("Add company", type="primary", use_container_width=False)
+        if submitted:
+            new_row = {"name": name.strip(), "career_url": normalized_url(career_url)}
+            if not new_row["name"] or not new_row["career_url"]:
+                st.error("Enter a company name and a valid careers-page URL.")
+            elif any(r["career_url"].lower().rstrip("/") == new_row["career_url"].lower().rstrip("/") for r in companies):
+                st.warning("That company URL is already in your watchlist.")
+            else:
+                companies = normalize_companies(companies + [new_row])
+                save_companies(companies)
+                st.success(f"{name.strip()} added.")
+                st.rerun()
+
+    with st.container(border=True):
+        head_l, head_r = st.columns([4, 1])
+        with head_l:
+            st.markdown("### Your watchlist")
+            st.caption(f"{len(companies)} compan(ies) added")
+        with head_r:
+            if st.button("Scan all", type="primary", use_container_width=True, key="companies_scan_all"):
+                start_scan(companies, "all")
+        if not companies:
+            st.markdown('<div class="empty"><strong>No companies added yet</strong>Add a company above to start finding open roles.</div>', unsafe_allow_html=True)
+        else:
+            state = current_scan_state()
+            active_names = set(state.get("companies", [])) if state.get("status") in {"running", "starting"} else set()
+            for index, company in enumerate(companies):
+                with st.container(border=True):
+                    left, scan_col, remove_col = st.columns([4, 1.15, .85])
+                    with left:
+                        st.markdown(f"**{company['name']}**")
+                        st.caption("Scan running" if company["name"] in active_names else "Official careers page connected")
+                    with scan_col:
+                        if st.button("Scan", key=f"scan_company_{index}", use_container_width=True):
+                            start_scan([company], "company")
+                    with remove_col:
+                        if st.button("Remove", key=f"remove_company_{index}", use_container_width=True):
+                            companies = [row for i, row in enumerate(companies) if i != index]
+                            save_companies(companies)
+                            st.rerun()
+
+    with st.expander("Import a company list"):
+        uploaded = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"], key="company_import")
+        if uploaded is not None:
+            try:
+                df = pd.read_csv(uploaded) if uploaded.name.lower().endswith(".csv") else pd.read_excel(uploaded)
+                rows = df.rename(columns={col: str(col).strip().lower() for col in df.columns}).to_dict("records")
+                imported = normalize_companies(rows)
+                st.caption(f"{len(imported)} valid companies found in the file.")
+                if st.button("Import companies", type="primary", key="import_company_list"):
+                    companies = normalize_companies(companies + imported)
+                    save_companies(companies)
+                    st.success("Company list imported.")
+                    st.rerun()
+            except Exception:
+                st.error("This file could not be read. Please upload a valid CSV or Excel file with company names and careers-page URLs.")
