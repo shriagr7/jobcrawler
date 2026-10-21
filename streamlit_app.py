@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import io
 import re
 import subprocess
 import sys
@@ -22,6 +23,7 @@ AGENT = ROOT / "agent.py"
 SCAN_WORKER = ROOT / "scan_worker.py"
 SCAN_STATE = ROOT / ".roleradar_scan_state.json"
 SCAN_DIR = ROOT / ".roleradar_runs"
+LOGO_SVG = ROOT / "roleradar_logo.svg"
 OPEN_STATUSES = {"likely open", "open", "active", "currently open"}
 LISTING_TITLES = {
     "careers", "career", "jobs", "job", "open positions", "current openings",
@@ -43,39 +45,48 @@ st.set_page_config(page_title="RoleRadar", page_icon="🎯", layout="wide", init
 
 st.markdown(r"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap');
-:root{--ink:#17233e;--muted:#71809a;--line:#e3eaf4;--blue:#5270e9;--mint:#70dfc6;--canvas:#f5f8fc}
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
+:root{--ink:#17233e;--muted:#71809a;--line:#e4e9f2;--blue:#5865f2;--purple:#7c65f7;--mint:#68e0c1;--canvas:#f6f8fc;--navy:#111a31}
 html,body,[class*="css"]{font-family:'DM Sans',sans-serif}
-.stApp{background:radial-gradient(ellipse at 100% 0%,#e8efff 0,transparent 28%),radial-gradient(ellipse at 0% 25%,#e6faf5 0,transparent 22%),var(--canvas);color:var(--ink)}
-.block-container{max-width:1320px;padding:1.4rem 1.8rem 3rem}
+.stApp{background:radial-gradient(ellipse at 92% -8%,#e6ebff 0,transparent 31%),radial-gradient(ellipse at 2% 28%,#def9f0 0,transparent 24%),linear-gradient(180deg,#f8faff 0%,#f6f8fc 58%,#f9fbff 100%);color:var(--ink)}
+.block-container{max-width:1380px;padding:1.55rem 2rem 3rem}
 [data-testid="stHeader"]{background:transparent}
-[data-testid="stSidebar"]{background:linear-gradient(160deg,#121d35,#20365b);border-right:1px solid #2a3d60}
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p{color:#d2dcef}
-[data-testid="stSidebar"] hr{border-color:#314666}
-.brand{font:800 1.55rem Manrope,sans-serif;letter-spacing:-.055em;color:#fff;padding:.4rem .1rem 0}
-.brand span{color:#80ebd5}.brand-sub{font-size:.76rem;color:#aab9d2!important;margin:.25rem 0 1.4rem!important}
-[data-testid="stSidebar"] [data-testid="stRadio"] label{padding:.55rem .7rem;border-radius:10px}
-[data-testid="stSidebar"] [data-testid="stRadio"] label p{color:#c4d0e4!important;font-weight:600}
-[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked){background:#2d456f;border:1px solid #46618d}
+[data-testid="stSidebar"]{background:linear-gradient(155deg,#10182d 0%,#172642 57%,#1c2e4e 100%);border-right:1px solid #293855;box-shadow:8px 0 32px #16274a0d}
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p{color:#d5dfef}
+[data-testid="stSidebar"] hr{border-color:#354661;margin:1rem 0}
+.brand-row{display:flex;align-items:center;gap:.72rem;padding:.25rem .1rem .35rem}
+.brand-icon{display:flex;width:46px;height:46px;flex:0 0 46px;align-items:center;justify-content:center;filter:drop-shadow(0 6px 12px #5375ef24)}.brand-icon svg{display:block;width:46px;height:46px}
+.brand-wordmark{font:800 1.34rem Manrope,sans-serif;letter-spacing:-.055em;color:#fff;line-height:1.15}.brand-wordmark span{color:#76ebd0}.brand-sub{font-size:.73rem;color:#a9b8d1!important;margin:.1rem 0 1.2rem!important;line-height:1.5}
+.sidebar-eyebrow{font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;color:#7f94b5;font-weight:800;margin:.45rem 0 .45rem .15rem}
+[data-testid="stSidebar"] [data-testid="stRadio"] label{padding:.62rem .72rem;border-radius:12px;margin:.1rem 0;border:1px solid transparent;transition:background .18s ease,border-color .18s ease}
+[data-testid="stSidebar"] [data-testid="stRadio"] label p{color:#c4d0e4!important;font-weight:600;font-size:.91rem}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked){background:linear-gradient(105deg,#354d7b,#2b3e66);border:1px solid #49638d;box-shadow:inset 3px 0 #76ead1,0 5px 14px #050b1833}
 [data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) p{color:#fff!important}
-div.stButton>button,div[data-testid="stDownloadButton"]>button,div[data-testid="stLinkButton"]>a,div.stFormSubmitButton>button{border-radius:11px;font-weight:700;min-height:2.55rem;border:1px solid #dce5f1;background:#fff;color:#344562}
-div.stButton>button[kind="primary"],div.stFormSubmitButton>button[kind="primary"]{background:linear-gradient(110deg,#5470e8,#7369ef);color:#fff;border-color:#5470e8;box-shadow:0 6px 16px #5069e82a}
-div.stButton>button:hover,div[data-testid="stLinkButton"]>a:hover{border-color:#9dafef;color:#405bd4}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:hover{background:#ffffff0c}
+div.stButton>button,div[data-testid="stDownloadButton"]>button,div[data-testid="stLinkButton"]>a,div.stFormSubmitButton>button{border-radius:12px;font-weight:700;min-height:2.65rem;border:1px solid #dce4f1;background:#fff;color:#344562;box-shadow:0 3px 8px #172b4d05;transition:all .18s ease}
+div.stButton>button[kind="primary"],div.stFormSubmitButton>button[kind="primary"]{background:linear-gradient(110deg,#5865f2,#8264f7);color:#fff;border-color:#665ff3;box-shadow:0 7px 18px #625ff02e}
+div.stButton>button:hover,div[data-testid="stLinkButton"]>a:hover,div[data-testid="stDownloadButton"]>button:hover{border-color:#aab7ee;color:#4658da;transform:translateY(-1px)}
 label,[data-testid="stWidgetLabel"]{color:#394862!important;font-weight:700!important}
-div[data-baseweb="input"]>div,div[data-baseweb="select"]>div{border-color:#dce5f1!important;border-radius:10px!important;min-height:42px}
-.page-title{font:800 2.2rem Manrope,sans-serif;letter-spacing:-.06em;color:#17233e;margin:0}
-.page-subtitle{font-size:.92rem;color:#75829a;margin:.4rem 0 1.25rem;line-height:1.55}
-.stat-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:.7rem 0 1.35rem}
-.stat-card{padding:1rem 1.1rem;background:#ffffffed;border:1px solid var(--line);border-radius:15px;box-shadow:0 5px 18px #20375b08}
-.stat-label{font-size:.74rem;color:#77859c;font-weight:700}.stat-value{font:800 1.85rem Manrope,sans-serif;letter-spacing:-.06em;color:#192744;margin-top:.25rem}.stat-note{font-size:.72rem;color:#96a1b3;margin-top:.15rem}
-.progress-card{padding:1.15rem 1.2rem 1rem;margin:.4rem 0 1.2rem;border:1px solid #dfe7f5;border-radius:18px;background:linear-gradient(130deg,#fff 0%,#f8faff 55%,#effcf8 100%);box-shadow:0 10px 26px #263c720b}
-.progress-head{display:flex;justify-content:space-between;gap:15px;align-items:flex-start;margin-bottom:.8rem}.progress-kicker{font-size:.65rem;font-weight:800;letter-spacing:.12em;color:#7182a1;text-transform:uppercase;margin-bottom:.28rem}.progress-title{font:800 1.04rem Manrope,sans-serif;color:#1a2947}.progress-note{font-size:.78rem;color:#7887a0;margin-top:.25rem;line-height:1.45}.progress-percent{font:800 1.6rem Manrope,sans-serif;color:#4d63dc;white-space:nowrap}.progress-percent small{display:block;font:800 .58rem 'DM Sans',sans-serif;letter-spacing:.1em;text-transform:uppercase;color:#8996ad;text-align:right;margin-top:.2rem}
-.progress-track{height:13px;background:#e6edf7;border:1px solid #e0e7f2;border-radius:999px;overflow:hidden;box-shadow:inset 0 2px 4px #182b4c0c}.progress-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#506be7,#8574f4 54%,#63d9bf);box-shadow:0 2px 9px #576ce64a;transition:width .6s ease;position:relative}.progress-fill.running:after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(100deg,transparent 20%,#ffffffa0 48%,transparent 74%);animation:shimmer 1.8s ease-in-out infinite}@keyframes shimmer{to{transform:translateX(100%)}}
-.progress-foot{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:.72rem;color:#8794a8;margin-top:.7rem}.job-card{padding:1rem 1.1rem;background:#ffffffed;border:1px solid var(--line);border-radius:15px;box-shadow:0 5px 18px #20375b08;margin:.6rem 0;transition:transform .15s ease,border-color .15s ease}.job-card:hover{border-color:#ccd8f0;transform:translateY(-1px)}.job-title{font:800 1.04rem Manrope,sans-serif;letter-spacing:-.025em;color:#1e2c49}.job-company{font-weight:700;color:#5064bd;margin-top:.2rem}.job-meta{font-size:.78rem;color:#7b89a0;margin-top:.45rem}.job-description{font-size:.82rem;line-height:1.55;color:#596983;margin-top:.65rem}.company-card{padding:.9rem 1rem;border:1px solid var(--line);border-radius:13px;background:#fff;margin:.5rem 0}.empty{padding:1.8rem 1.1rem;border:1px dashed #cbd7e9;border-radius:15px;background:#ffffffa8;text-align:center;color:#7c8aa0}.empty strong{display:block;color:#344562;margin-bottom:.3rem}
-div[data-testid="stVerticalBlockBorderWrapper"]{border-color:var(--line)!important;border-radius:15px!important;background:#ffffffc9}
-[data-testid="stDataFrame"]{border:1px solid var(--line);border-radius:12px;overflow:hidden}
-@media(max-width:760px){.block-container{padding:.9rem .7rem 2rem}.page-title{font-size:1.8rem}.stat-row{gap:7px}.stat-card{padding:.75rem}.stat-value{font-size:1.4rem}.progress-head{gap:8px}.progress-percent{font-size:1.3rem}}
-@media(prefers-reduced-motion:reduce){.progress-fill,.progress-fill:after{animation:none!important;transition:none!important}}
+div[data-baseweb="input"]>div,div[data-baseweb="select"]>div{border-color:#dce5f1!important;border-radius:12px!important;min-height:44px;background:#fff}
+.page-title{font:800 2.28rem Manrope,sans-serif;letter-spacing:-.065em;color:#17233e;margin:0;line-height:1.18}
+.page-subtitle{font-size:.93rem;color:#75829a;margin:.48rem 0 1.35rem;line-height:1.65;max-width:900px}
+.stat-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:.8rem 0 1.45rem}
+.stat-card{position:relative;overflow:hidden;padding:1.05rem 1.15rem;background:linear-gradient(140deg,#fff 0%,#fbfcff 100%);border:1px solid #e4e9f3;border-radius:18px;box-shadow:0 10px 28px #20375b08}
+.stat-card:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:linear-gradient(180deg,#5865f2,#68e0c1)}
+.stat-label{font-size:.74rem;color:#77859c;font-weight:700;letter-spacing:.01em}.stat-value{font:800 1.9rem Manrope,sans-serif;letter-spacing:-.06em;color:#192744;margin-top:.25rem}.stat-note{font-size:.72rem;color:#96a1b3;margin-top:.15rem}
+.progress-card{padding:1.2rem 1.25rem 1.05rem;margin:.45rem 0 1.3rem;border:1px solid #e0e7f4;border-radius:20px;background:linear-gradient(128deg,#fff 0%,#f7f8ff 54%,#effcf8 100%);box-shadow:0 12px 32px #263c720c}
+.progress-head{display:flex;justify-content:space-between;gap:15px;align-items:flex-start;margin-bottom:.85rem}.progress-kicker{font-size:.65rem;font-weight:800;letter-spacing:.13em;color:#7182a1;text-transform:uppercase;margin-bottom:.3rem}.progress-title{font:800 1.06rem Manrope,sans-serif;color:#1a2947}.progress-note{font-size:.79rem;color:#7887a0;margin-top:.3rem;line-height:1.5}.progress-percent{font:800 1.65rem Manrope,sans-serif;color:#5a62ed;white-space:nowrap}.progress-percent small{display:block;font:800 .58rem 'DM Sans',sans-serif;letter-spacing:.1em;text-transform:uppercase;color:#8996ad;text-align:right;margin-top:.2rem}
+.progress-track{height:14px;background:#e8edf7;border:1px solid #e0e7f2;border-radius:999px;overflow:hidden;box-shadow:inset 0 2px 4px #182b4c0c}.progress-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#5865f2 0%,#8969f7 52%,#61dec0 100%);box-shadow:0 2px 9px #576ce64a;transition:width .6s ease;position:relative}.progress-fill.running:after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(100deg,transparent 20%,#ffffffa8 48%,transparent 74%);animation:shimmer 1.8s ease-in-out infinite}@keyframes shimmer{to{transform:translateX(100%)}}
+.progress-foot{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:.72rem;color:#8794a8;margin-top:.72rem}
+.job-card{padding:1rem 1.15rem;background:linear-gradient(145deg,#fff,#fcfdff);border:1px solid var(--line);border-radius:17px;box-shadow:0 6px 20px #20375b06;margin:.6rem 0;transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease}.job-card:hover{border-color:#cbd5f3;transform:translateY(-2px);box-shadow:0 12px 28px #22375b0c}.job-title{font:800 1.04rem Manrope,sans-serif;letter-spacing:-.025em;color:#1e2c49}.job-company{font-weight:700;color:#5663ce;margin-top:.22rem}.job-meta{font-size:.78rem;color:#7b89a0;margin-top:.48rem}.job-description{font-size:.82rem;line-height:1.6;color:#596983;margin-top:.7rem}.company-card{padding:.95rem 1.05rem;border:1px solid var(--line);border-radius:15px;background:#fff;margin:.5rem 0;box-shadow:0 4px 14px #20375b04}.empty{padding:2rem 1.1rem;border:1px dashed #cbd7e9;border-radius:17px;background:#ffffffb8;text-align:center;color:#7c8aa0}.empty strong{display:block;color:#344562;margin-bottom:.3rem}
+div[data-testid="stVerticalBlockBorderWrapper"]{border-color:var(--line)!important;border-radius:17px!important;background:#ffffffd9;box-shadow:0 5px 18px #20375b04}
+[data-testid="stDataFrame"]{border:1px solid var(--line);border-radius:13px;overflow:hidden}
+div[data-testid="stMetric"]{background:linear-gradient(140deg,#fff,#fbfcff);border:1px solid var(--line);border-radius:16px;padding:.9rem 1rem;box-shadow:0 6px 18px #20375b06}
+div[data-testid="stMetricLabel"]{color:#77859c;font-weight:700}div[data-testid="stMetricValue"]{font-family:Manrope,sans-serif;color:#192744}
+[data-testid="stPlotlyChart"],[data-testid="stVegaLiteChart"]{border-radius:14px}
+[data-testid="stAlert"]{border-radius:13px}
+@media(max-width:760px){.block-container{padding:.95rem .72rem 2rem}.page-title{font-size:1.8rem}.stat-row{gap:7px}.stat-card{padding:.8rem}.stat-value{font-size:1.45rem}.progress-head{gap:8px}.progress-percent{font-size:1.3rem}.brand-icon{width:42px;height:42px;flex-basis:42px}.brand-icon svg{width:42px;height:42px}}
+@media(prefers-reduced-motion:reduce){.progress-fill,.progress-fill:after,.job-card{animation:none!important;transition:none!important}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -481,39 +492,166 @@ def render_job_cards(frame: pd.DataFrame, limit: int | None = None) -> None:
                     st.caption("Job link unavailable")
 
 
+def build_role_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    """Group equivalent job titles and show how widely each role appears."""
+    columns = ["_role_key", "Job role", "Openings", "Companies hiring", "Companies"]
+    if frame.empty or "job_title" not in frame.columns:
+        return pd.DataFrame(columns=columns)
+
+    work = frame.copy()
+    work["job_title"] = work["job_title"].fillna("").astype(str).str.strip()
+    work["_role_key"] = work["job_title"].str.casefold()
+    work = work[work["_role_key"].ne("") & ~work["_role_key"].isin({"nan", "none", "nat"})]
+    if work.empty:
+        return pd.DataFrame(columns=columns)
+    if "company" not in work.columns:
+        work["company"] = "Company not specified"
+    work["company"] = work["company"].fillna("").astype(str).str.strip().replace({"": "Company not specified", "nan": "Company not specified"})
+
+    grouped = work.groupby("_role_key", dropna=False).agg(
+        **{
+            "Job role": ("job_title", "first"),
+            "Openings": ("job_title", "size"),
+            "Companies hiring": ("company", "nunique"),
+            "Companies": ("company", lambda values: ", ".join(sorted(set(v for v in values.astype(str) if v.strip())))),
+        }
+    ).reset_index()
+    return grouped.sort_values(["Openings", "Companies hiring", "Job role"], ascending=[False, False, True]).reset_index(drop=True)
+
+
+def _clean_category_counts(frame: pd.DataFrame, column: str, label: str, limit: int = 10) -> pd.DataFrame:
+    if frame.empty or column not in frame.columns:
+        return pd.DataFrame(columns=[label, "Openings"])
+    values = frame[column].fillna("").astype(str).str.strip()
+    values = values.mask(values.eq("") | values.str.lower().isin({"nan", "none", "nat"}), "Not specified")
+    result = values.value_counts().head(limit).rename_axis(label).rename("Openings").reset_index()
+    return result
+
+
 def export_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return the user-facing job fields in a stable, readable order."""
     mapping = {
         "job_title": "Job title", "company": "Company", "location_mention": "Location",
         "date_posted": "Date posted", "employment_type_mention": "Employment type",
         "work_arrangement_mention": "Work arrangement", "experience_mentions": "Experience",
-        "salary_mention": "Salary", "source_url": "Job posting URL",
+        "salary_mention": "Salary", "description": "Job description",
+        "source_url": "Job posting URL",
     }
     cols = [name for name in mapping if name in frame.columns]
     return frame[cols].rename(columns=mapping)
 
 
+def build_excel_export(frame: pd.DataFrame, sheet_name: str = "Open jobs") -> bytes:
+    """Create a styled Excel workbook with clickable individual-job links."""
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    output = io.BytesIO()
+    workbook_data = export_columns(frame).copy()
+    if "Job posting URL" in workbook_data.columns:
+        urls = workbook_data["Job posting URL"].fillna("").astype(str)
+        workbook_data.insert(
+            1 if "Job title" in workbook_data.columns else 0,
+            "View job description",
+            urls.map(lambda value: "View job description ↗" if value.startswith(("https://", "http://")) else ""),
+        )
+
+    # Keep the worksheet name within Excel's 31-character limit.
+    safe_sheet_name = (sheet_name or "Open jobs")[:31]
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        workbook_data.to_excel(writer, index=False, sheet_name=safe_sheet_name)
+        ws = writer.sheets[safe_sheet_name]
+        ws.freeze_panes = "A2"
+        if ws.max_row >= 1 and ws.max_column >= 1:
+            ws.auto_filter.ref = ws.dimensions
+
+        header_fill = PatternFill(fill_type="solid", fgColor="172642")
+        header_font = Font(name="Aptos", bold=True, color="FFFFFF", size=10)
+        link_font = Font(name="Aptos", color="4F46E5", underline="single", size=10)
+        body_font = Font(name="Aptos", color="263653", size=10)
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.row_dimensions[1].height = 30
+
+        column_positions = {str(cell.value): cell.column for cell in ws[1]}
+        link_col = column_positions.get("View job description")
+        url_col = column_positions.get("Job posting URL")
+        desc_col = column_positions.get("Job description")
+        title_col = column_positions.get("Job title")
+        company_col = column_positions.get("Company")
+
+        for row_idx in range(2, ws.max_row + 1):
+            ws.row_dimensions[row_idx].height = 32
+            for cell in ws[row_idx]:
+                cell.font = body_font
+                cell.alignment = Alignment(vertical="top", wrap_text=(cell.column == desc_col))
+            url = str(ws.cell(row=row_idx, column=url_col).value or "").strip() if url_col else ""
+            if url.startswith(("https://", "http://")):
+                if link_col:
+                    link_cell = ws.cell(row=row_idx, column=link_col)
+                    link_cell.hyperlink = url
+                    link_cell.font = link_font
+                    link_cell.alignment = Alignment(vertical="top")
+                if url_col:
+                    url_cell = ws.cell(row=row_idx, column=url_col)
+                    url_cell.hyperlink = url
+                    url_cell.font = link_font
+                    url_cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if desc_col:
+                description = str(ws.cell(row=row_idx, column=desc_col).value or "")
+                if description:
+                    ws.row_dimensions[row_idx].height = min(96, max(38, 24 + (len(description) // 95) * 12))
+
+        for col_idx in range(1, ws.max_column + 1):
+            header = str(ws.cell(row=1, column=col_idx).value or "")
+            if header == "Job title":
+                width = 34
+            elif header == "View job description":
+                width = 25
+            elif header == "Company":
+                width = 27
+            elif header == "Location":
+                width = 24
+            elif header == "Job description":
+                width = 62
+            elif header == "Job posting URL":
+                width = 46
+            elif header in {"Date posted", "Employment type", "Work arrangement", "Experience", "Salary"}:
+                width = 20
+            else:
+                width = 18
+            ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = width
+
+    return output.getvalue()
+
+
 # Session settings
 cfg = load_config()
 companies = normalize_companies(cfg.get("companies", []))
-if "nav" not in st.session_state or st.session_state.get("nav") not in {"Overview", "Open jobs", "Companies"}:
+if "nav" not in st.session_state or st.session_state.get("nav") not in {"Overview", "Job dashboard", "Open jobs", "Companies"}:
     st.session_state["nav"] = "Overview"
 
 with st.sidebar:
-    st.markdown('<div class="brand">Role<span>Radar</span></div><p class="brand-sub">Find real, open job opportunities.</p>', unsafe_allow_html=True)
-    st.radio("Menu", ["Overview", "Open jobs", "Companies"], key="nav", label_visibility="collapsed")
+    try:
+        logo_markup = LOGO_SVG.read_text(encoding="utf-8")
+    except OSError:
+        logo_markup = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="46" height="46"><rect width="64" height="64" rx="18" fill="#5865f2"/><circle cx="32" cy="32" r="20" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width="2"/><circle cx="32" cy="32" r="13" fill="none" stroke="#fff" stroke-opacity=".7" stroke-width="2"/><path d="M32 32 48 16" stroke="#68e0c1" stroke-width="4" stroke-linecap="round"/><circle cx="32" cy="32" r="4" fill="#68e0c1"/></svg>"""
+    st.markdown(f'<div class="brand-row"><div class="brand-icon">{logo_markup}</div><div class="brand-wordmark">Role<span>Radar</span></div></div><p class="brand-sub">Find real, open job opportunities.</p><div class="sidebar-eyebrow">Workspace</div>', unsafe_allow_html=True)
+    st.radio("Menu", ["Overview", "Job dashboard", "Open jobs", "Companies"], key="nav", label_visibility="collapsed")
     st.markdown("---")
     if st.button("Scan all companies", type="primary", use_container_width=True, key="sidebar_scan_all"):
         start_scan(companies, "all")
     state_sidebar = current_scan_state()
     if state_sidebar.get("status") in {"running", "starting"}:
         st.caption("A scan is running in the background.")
+    st.markdown("<div style='margin-top:1.1rem;padding:.75rem .8rem;border-radius:13px;background:#ffffff0b;border:1px solid #ffffff14;color:#aebed7;font-size:.72rem;line-height:1.55'>Only individual job postings<br><span style='color:#73e6ce;font-weight:700'>Verified open roles</span></div>", unsafe_allow_html=True)
 
 page = st.session_state["nav"]
 data, results_error = load_results()
 if results_error:
     st.warning("Saved jobs could not be loaded right now. Please refresh or ask your app administrator for help.")
 
-# Keep scan progress visible wherever the user navigates.
 active_scan = current_scan_state()
 if active_scan:
     render_scan_monitor()
@@ -534,6 +672,12 @@ if page == "Overview":
       <div class="stat-card"><div class="stat-label">Companies hiring</div><div class="stat-value">{count_companies:,}</div><div class="stat-note">With open roles found</div></div>
       <div class="stat-card"><div class="stat-label">Posted in 30 days</div><div class="stat-value">{recent_count:,}</div><div class="stat-note">Based on posting dates</div></div>
     </div>''', unsafe_allow_html=True)
+    dash_button_col, dash_note_col = st.columns([1.1, 3.2], gap="medium")
+    with dash_button_col:
+        st.button("View job dashboard →", key="overview_job_dashboard", on_click=set_navigation, args=("Job dashboard",), use_container_width=True)
+    with dash_note_col:
+        st.caption("Compare the most common job roles, which companies are hiring for them, and where openings are concentrated.")
+
     st.markdown("### Latest job listings")
     if not data.empty:
         if "last_seen_utc" in data.columns:
@@ -549,90 +693,96 @@ if page == "Overview":
         if not companies:
             st.info("Start by adding companies on the Companies page.")
 
-elif page == "Open jobs":
-    st.markdown('<div class="page-title">Open job listings</div><div class="page-subtitle">Search real roles and open the direct posting to review or apply.</div>', unsafe_allow_html=True)
-    search_col, company_col = st.columns([2.2, 1], gap="medium")
-    with search_col:
-        query = st.text_input("Search jobs", placeholder="Job title, company, skill, or location", key="jobs_query")
-    company_options = ["All companies"]
+elif page == "Job dashboard":
+    st.markdown('<div class="page-title">Overall Job Dashboard Summary</div><div class="page-subtitle">A cross-company view of the open roles RoleRadar has verified. Use the charts to see which roles are most common and which companies are hiring.</div>', unsafe_allow_html=True)
+
+    all_role_summary = build_role_summary(data)
+    total_open_jobs = int(len(data))
+    total_hiring_companies = int(data["company"].fillna("").astype(str).str.strip().replace("", pd.NA).nunique()) if not data.empty and "company" in data.columns else 0
+    total_distinct_roles = int(len(all_role_summary))
+    recent_open_jobs = 0
+    if not data.empty and "date_posted" in data.columns:
+        posted_dates = pd.to_datetime(data["date_posted"], errors="coerce", utc=True)
+        recent_open_jobs = int((posted_dates >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=30)).sum())
+
+    k1, k2, k3, k4 = st.columns(4, gap="medium")
+    k1.metric("Open job listings", f"{total_open_jobs:,}")
+    k2.metric("Different job roles", f"{total_distinct_roles:,}")
+    k3.metric("Companies hiring", f"{total_hiring_companies:,}")
+    k4.metric("Posted in last 30 days", f"{recent_open_jobs:,}")
+
+    st.markdown("### Compare job roles across companies")
+    filter_col, role_search_col = st.columns([1.1, 2], gap="medium")
+    dash_company_options = ["All companies"]
     if not data.empty and "company" in data.columns:
-        company_options.extend(sorted(name for name in data["company"].dropna().astype(str).unique() if name.strip()))
-    with company_col:
-        chosen_company = st.selectbox("Company", company_options, key="jobs_company")
-    filtered = data.copy()
-    if chosen_company != "All companies" and "company" in filtered.columns:
-        filtered = filtered[filtered["company"].astype(str) == chosen_company]
-    if query.strip():
-        terms = [col for col in ["job_title", "company", "location_mention", "description", "employment_type_mention"] if col in filtered.columns]
-        matched = pd.Series(False, index=filtered.index)
-        for col in terms:
-            matched |= filtered[col].astype(str).str.contains(query.strip(), case=False, regex=False, na=False)
-        filtered = filtered[matched]
-    st.caption(f"{len(filtered):,} open job listing(s)")
-    out = export_columns(filtered)
-    st.download_button("Download results (CSV)", data=out.to_csv(index=False).encode("utf-8-sig"), file_name="roleradar_open_jobs.csv", mime="text/csv")
-    render_job_cards(filtered)
+        dash_company_options += sorted(n for n in data["company"].dropna().astype(str).unique() if n.strip() and n.lower() != "nan")
+    with filter_col:
+        dash_company = st.selectbox("Company filter", dash_company_options, key="dashboard_company_filter")
+    with role_search_col:
+        dash_role_search = st.text_input("Find a job role", placeholder="e.g. Data Engineer, Claims Analyst, QA Lead", key="dashboard_role_search")
 
-elif page == "Companies":
-    st.markdown('<div class="page-title">Companies</div><div class="page-subtitle">Choose the official careers or open-positions page for each company. RoleRadar will find the individual job postings from there.</div>', unsafe_allow_html=True)
-    with st.container(border=True):
-        st.markdown("### Add a company")
-        with st.form("add_company_form", clear_on_submit=True):
-            name = st.text_input("Company name", placeholder="e.g. Acme Insurance")
-            career_url = st.text_input("Careers or open positions URL", placeholder="https://company.com/careers")
-            submitted = st.form_submit_button("Add company", type="primary", use_container_width=False)
-        if submitted:
-            new_row = {"name": name.strip(), "career_url": normalized_url(career_url)}
-            if not new_row["name"] or not new_row["career_url"]:
-                st.error("Enter a company name and a valid careers-page URL.")
-            elif any(r["career_url"].lower().rstrip("/") == new_row["career_url"].lower().rstrip("/") for r in companies):
-                st.warning("That company URL is already in your watchlist.")
-            else:
-                companies = normalize_companies(companies + [new_row])
-                save_companies(companies)
-                st.success(f"{name.strip()} added.")
-                st.rerun()
+    dashboard_data = data.copy()
+    if dash_company != "All companies" and "company" in dashboard_data.columns:
+        dashboard_data = dashboard_data[dashboard_data["company"].astype(str) == dash_company]
+    if dash_role_search.strip() and "job_title" in dashboard_data.columns:
+        dashboard_data = dashboard_data[dashboard_data["job_title"].astype(str).str.contains(dash_role_search.strip(), case=False, regex=False, na=False)]
 
-    with st.container(border=True):
-        head_l, head_r = st.columns([4, 1])
-        with head_l:
-            st.markdown("### Your watchlist")
-            st.caption(f"{len(companies)} compan(ies) added")
-        with head_r:
-            if st.button("Scan all", type="primary", use_container_width=True, key="companies_scan_all"):
-                start_scan(companies, "all")
-        if not companies:
-            st.markdown('<div class="empty"><strong>No companies added yet</strong>Add a company above to start finding open roles.</div>', unsafe_allow_html=True)
+    role_summary = build_role_summary(dashboard_data)
+    st.caption(f"Showing {len(dashboard_data):,} open listing(s) across {dashboard_data['company'].nunique() if not dashboard_data.empty and 'company' in dashboard_data.columns else 0:,} company/companies for this view. The headline figures above always summarize all saved open jobs.")
+
+    chart_left, chart_right = st.columns(2, gap="large")
+    with chart_left:
+        st.markdown("#### Most common job roles")
+        if not role_summary.empty:
+            chart_roles = role_summary.head(12).set_index("Job role")[["Openings"]]
+            st.bar_chart(chart_roles, height=330, use_container_width=True, horizontal=True)
         else:
-            state = current_scan_state()
-            active_names = set(state.get("companies", [])) if state.get("status") in {"running", "starting"} else set()
-            for index, company in enumerate(companies):
-                with st.container(border=True):
-                    left, scan_col, remove_col = st.columns([4, 1.15, .85])
-                    with left:
-                        st.markdown(f"**{company['name']}**")
-                        st.caption("Scan running" if company["name"] in active_names else "Official careers page connected")
-                    with scan_col:
-                        if st.button("Scan", key=f"scan_company_{index}", use_container_width=True):
-                            start_scan([company], "company")
-                    with remove_col:
-                        if st.button("Remove", key=f"remove_company_{index}", use_container_width=True):
-                            companies = [row for i, row in enumerate(companies) if i != index]
-                            save_companies(companies)
-                            st.rerun()
+            st.info("No job roles match the selected filters yet.")
+    with chart_right:
+        st.markdown("#### Companies with the most openings")
+        company_chart = _clean_category_counts(dashboard_data, "company", "Company", 12)
+        if not company_chart.empty:
+            st.bar_chart(company_chart.set_index("Company")[["Openings"]], height=330, use_container_width=True, horizontal=True)
+        else:
+            st.info("Company comparisons will appear after open jobs are found.")
 
-    with st.expander("Import a company list"):
-        uploaded = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"], key="company_import")
-        if uploaded is not None:
-            try:
-                df = pd.read_csv(uploaded) if uploaded.name.lower().endswith(".csv") else pd.read_excel(uploaded)
-                rows = df.rename(columns={col: str(col).strip().lower() for col in df.columns}).to_dict("records")
-                imported = normalize_companies(rows)
-                st.caption(f"{len(imported)} valid companies found in the file.")
-                if st.button("Import companies", type="primary", key="import_company_list"):
-                    companies = normalize_companies(companies + imported)
-                    save_companies(companies)
-                    st.success("Company list imported.")
-                    st.rerun()
-            except Exception:
-                st.error("This file could not be read. Please upload a valid CSV or Excel file with company names and careers-page URLs.")
+    if not role_summary.empty:
+        st.markdown("### Job role summary across companies")
+        role_display = role_summary[["Job role", "Openings", "Companies hiring", "Companies"]].head(50).copy()
+        st.dataframe(role_display, use_container_width=True, hide_index=True, column_config={
+            "Job role": st.column_config.TextColumn("Job role", help="Job title as listed by the employer"),
+            "Openings": st.column_config.NumberColumn("Openings", format="%d"),
+            "Companies hiring": st.column_config.NumberColumn("Companies hiring", format="%d"),
+            "Companies": st.column_config.TextColumn("Companies with this role", help="Companies with at least one matching open job"),
+        })
+
+        st.markdown("### Company-by-role comparison")
+        st.caption("Counts show how many matching open postings each company has for each job title. This matrix uses the 15 most common roles and 12 companies in the current view.")
+        role_keys = role_summary.head(15)["_role_key"].tolist()
+        if "company" in dashboard_data.columns:
+            top_companies = dashboard_data["company"].fillna("").astype(str).value_counts().head(12).index.tolist()
+            matrix_source = dashboard_data.copy()
+            matrix_source["_role_key"] = matrix_source["job_title"].fillna("").astype(str).str.strip().str.casefold()
+            matrix_source = matrix_source[matrix_source["_role_key"].isin(role_keys) & matrix_source["company"].astype(str).isin(top_companies)]
+            role_labels = role_summary.set_index("_role_key")["Job role"].to_dict()
+            matrix_source["Job role"] = matrix_source["_role_key"].map(role_labels)
+            if not matrix_source.empty:
+                matrix = matrix_source.pivot_table(index="Job role", columns="company", values="job_title", aggfunc="count", fill_value=0)
+                matrix = matrix.loc[matrix.sum(axis=1).sort_values(ascending=False).index]
+                st.dataframe(matrix, use_container_width=True)
+            else:
+                st.info("No role/company combinations match the current filters.")
+
+    breakdown_left, breakdown_right = st.columns(2, gap="large")
+    with breakdown_left:
+        st.markdown("#### Openings by location")
+        location_chart = _clean_category_counts(dashboard_data, "location_mention", "Location", 10)
+        if not location_chart.empty:
+            st.bar_chart(location_chart.set_index("Location")[["Openings"]], height=300, use_container_width=True, horizontal=True)
+        else:
+            st.caption("Location details will appear when employers provide them.")
+    with breakdown_right:
+        st.markdown("#### Openings by employment type")
+        employment_chart = _clean_category_counts(dashboard_data, "employment_type_mention", "Employment type", 8)
+        if not employment_chart.empty:
+            st.bar_chart(employment_chart.set_index("Employment type")[["Openings"]], height=300, use_container_width=True, horizontal
